@@ -1,0 +1,60 @@
+.Dd December 2, 2022
+.Dt XCLIPD 1
+.Os
+.Sh NAME
+.Nm xclipd
+.Nd clipboard manager daemon
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Nm
+maintains the contents of the
+.Ic CLIPBOARD
+selection, making it possible to copy the contents of a window into the
+clipboard and to close that window without losing the copied content.
+.Pp
+.Nm
+also keeps the
+.Ic PRIMARY
+selection synchronized with the
+.Ic CLIPBOARD
+selection.
+Whenever something is copied into the
+.Ic CLIPBOARD
+selection, that content can also be requested from the
+.Ic PRIMARY
+selection as well, but not the other way around.
+.Pp
+.Nm
+does not daemonize itself;
+therefore, it should be run in the background.
+.Sh ENVIRONMENT
+The following environment variables affect the execution of
+.Nm Ns .
+.Bl -tag -width Ds
+.It Ev DISPLAY
+The display to start
+.Nm
+on.
+.Sh BUGS
+.Nm
+does not support large selection contents and does not implement
+incremental selection transfer.
+.Pp
+.Nm
+only keeps textual content on the clipboard.
+Images, audio and contents in other formats are not kept.
+.Pp
+.Nm
+requests textual contents from the original clipboard owner in its plain format;
+therefore, any textual markup is lost.
+In normal conditions, copying a bold or italic text from a browser and
+pasting it into LibreOffice maintains the bold/italic markup,
+but pasting it into XTerm loses the markup (only the plain text is pasted).
+However,
+.Nm
+only saves plain text;
+so in that example, the markup is lost both when copying into LibreOffice or into XTerm.
+Consider that bug as a feature.
+.Pp
+There are probably other bugs.

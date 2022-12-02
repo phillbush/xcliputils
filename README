@@ -1,0 +1,45 @@
+XCLIPD(1)                   General Commands Manual                  XCLIPD(1)
+
+NAME
+     xclipd – clipboard manager daemon
+
+SYNOPSIS
+     xclipd
+
+DESCRIPTION
+     xclipd maintains the contents of the CLIPBOARD selection, making it
+     possible to copy the contents of a window into the clipboard and to close
+     that window without losing the copied content.
+
+     xclipd also keeps the PRIMARY selection synchronized with the CLIPBOARD
+     selection.  Whenever something is copied into the CLIPBOARD selection,
+     that content can also be requested from the PRIMARY selection as well,
+     but not the other way around.
+
+     xclipd does not daemonize itself; therefore, it should be run in the
+     background.
+
+ENVIRONMENT
+     The following environment variables affect the execution of xclipd.
+
+     DISPLAY
+             The display to start xclipd on.
+
+BUGS
+     xclipd does not support large selection contents and does not implement
+     incremental selection transfer.
+
+     xclipd only keeps textual content on the clipboard.  Images, audio and
+     contents in other formats are not kept.
+
+     xclipd requests textual contents from the original clipboard owner in its
+     plain format; therefore, any textual markup is lost.  In normal
+     conditions, copying a bold or italic text from a browser and pasting it
+     into LibreOffice maintains the bold/italic markup, but pasting it into
+     XTerm loses the markup (only the plain text is pasted).  However, xclipd
+     only saves plain text; so in that example, the markup is lost both when
+     copying into LibreOffice or into XTerm.  Consider that bug as a feature.
+
+     There are probably other bugs.
+
+OpenBSD 7.2                    December 2, 2022                    OpenBSD 7.2
