@@ -235,6 +235,8 @@ ownselection(struct Manager *man, int selnum, Time time)
 static void
 cleanbuffer(struct Manager *man)
 {
+	if (man->content.buf == NULL)
+		return;
 	man->content.buf[0] = '\0';
 	man->content.buflen = 0;
 }
@@ -675,16 +677,14 @@ done:
 static void
 selfixes(XEvent *p, struct Manager *man)
 {
-	static Window prevowner = None;
 	XFixesSelectionNotifyEvent *xev;
 
 	xev = (XFixesSelectionNotifyEvent *)p;
-	if (xev->selection == atoms[CLIPBOARD]) {
-		if (xev->owner == None && prevowner != man->win) {
-			cleanbuffer(man);
-			ownselection(man, SEL_CLIPBOARD, xev->timestamp);
-		}
-		prevowner = xev->owner;
+	if (xev->selection == atoms[CLIPBOARD] && xev->owner != man->win) {
+		/* another client got the clipboard; request its content */
+		man->sels[SEL_CLIPBOARD].own = False;
+		man->sels[SEL_PRIMARY].own = False;
+		requestclipboard(man, atoms[UTF8_STRING], xev->timestamp);
 	}
 }
 

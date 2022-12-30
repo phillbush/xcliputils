@@ -1,6 +1,6 @@
 PROG = xclipd
+OBJS = ${PROG:=.o}
 SRCS = ${PROG:=.c}
-OBJS = ${SRCS:.c=.o}
 MANS = ${PROG:=.1}
 
 PREFIX ?= /usr/local
