@@ -563,10 +563,21 @@ selclear(XEvent *p, struct Manager *man)
 		/* we lost the manager selection; stop running */
 		man->running = False;
 	} else if (xev->selection == atoms[CLIPBOARD]) {
-		/* we lost the clipboard; request its content */
-		man->sels[SEL_CLIPBOARD].own = False;
-		man->sels[SEL_PRIMARY].own = False;
-		requestclipboard(man, atoms[UTF8_STRING], xev->time);
+		/*
+		 * We lost the clipboard.  We could request its content
+		 * now; but we do not.
+		 *
+		 * We use XFixes to be also notified when the clipboard
+		 * is owned by another application.  We are therefore
+		 * notified twice: once because we lost the clipboard,
+		 * and another because someone else owned it.  We must
+		 * request the clipboard on only one of those events.
+		 *
+		 * It is better to request when we are notified by
+		 * XFixes when someone else owned the clipboard, because
+		 * someone may own the clipboard when we have not owned
+		 * it previously.
+		 */
 	}
 }
 
