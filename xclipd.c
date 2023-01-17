@@ -38,6 +38,7 @@ enum {
 
 struct Manager {
 	struct Content {
+		Atom target;
 		size_t bufsize, buflen;
 		unsigned char *buf;
 	} content;
@@ -131,6 +132,33 @@ createwin(Display *dpy)
 			.event_mask = StructureNotifyMask | PropertyChangeMask,
 		}
 	);
+}
+
+static Atom
+getatomprop(Window win, Atom prop)
+{
+	unsigned char *p;
+	unsigned long len;
+	unsigned long dl;   /* dummy variable */
+	int di;             /* dummy variable */
+	int state;
+	Atom atom, type;
+
+	p = NULL;
+	atom = None;
+	state = XGetWindowProperty(
+		dpy, win,
+		prop, 0L, 0x1FFFFFFF,
+		False,
+		XA_ATOM, &type,
+		&di, &len, &dl, &p
+	);
+	if (state != Success || len == 0 || p == NULL)
+		goto done;
+	atom = *(Atom *)p;
+done:
+	XFree(p);
+	return atom;
 }
 
 static unsigned long
@@ -239,10 +267,11 @@ cleanbuffer(struct Manager *man)
 		return;
 	man->content.buf[0] = '\0';
 	man->content.buflen = 0;
+	man->content.target = None;
 }
 
 static void
-getclipboard(struct Manager *man, Atom prop)
+getclipboard(struct Manager *man, Atom prop, Atom target)
 {
 	unsigned char *p;
 	unsigned long len, size;
@@ -253,6 +282,7 @@ getclipboard(struct Manager *man, Atom prop)
 	if (XGetWindowProperty(dpy, man->win, prop, 0L, 0x1FFFFFFF, True, AnyPropertyType, &type, &format, &len, &dl, &p) != Success || len == 0 || p == NULL) {
 		XFree(p);
 		man->content.buflen = 0;
+		man->content.target = None;
 		return;
 	}
 	if (type == atoms[INCR]) {
@@ -270,6 +300,7 @@ getclipboard(struct Manager *man, Atom prop)
 	man->content.buflen = len;
 	memcpy(man->content.buf, p, man->content.buflen);
 	man->content.buf[len] = '\0';
+	man->content.target = target;
 	XFree(p);
 }
 
@@ -334,7 +365,8 @@ init(struct Manager *man)
 	man->content = (struct Content){
 		.bufsize = 0,
 		.buflen = 0,
-		.buf = NULL
+		.buf = NULL,
+		.target = None,
 	};
 
 	if ((man->win = createwin(dpy)) == None) {
@@ -522,7 +554,8 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 		);
 		return True;
 	}
-	if (target == atoms[TEXT] ||
+	if (target == man->content.target ||
+	    target == atoms[TEXT] ||
 	    target == atoms[UTF8_STRING] ||
 	    target == atoms[COMPOUND_TEXT] ||
 	    target == XA_STRING) {
@@ -530,7 +563,7 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 			dpy,
 			requestor,
 			property,
-			atoms[UTF8_STRING],
+			target,
 			8L,
 			PropModeReplace,
 			(man->content.buf == NULL ? (unsigned char *)"" : man->content.buf),
@@ -585,11 +618,19 @@ static void
 selnotify(XEvent *p, struct Manager *man)
 {
 	XSelectionEvent *xev;
+	Atom target;
 
 	xev = &p->xselection;
-	if (xev->property != None) {
+	if (xev->target == atoms[TARGETS]) {
+		target = None;
+		if (xev->property != None)
+			target = getatomprop(xev->requestor, xev->target);
+		if (target == None)
+			target = atoms[UTF8_STRING];
+		requestclipboard(man, target, xev->time);
+	} else if (xev->property != None) {
 		/* conversion succeeded; get clipboard content and own selection */
-		getclipboard(man, xev->property);
+		getclipboard(man, xev->property, xev->target);
 		ownselection(man, SEL_CLIPBOARD, xev->time);
 		ownselection(man, SEL_PRIMARY, xev->time);
 	} else if (xev->target == atoms[UTF8_STRING]) {
@@ -695,7 +736,7 @@ selfixes(XEvent *p, struct Manager *man)
 		/* another client got the clipboard; request its content */
 		man->sels[SEL_CLIPBOARD].own = False;
 		man->sels[SEL_PRIMARY].own = False;
-		requestclipboard(man, atoms[UTF8_STRING], xev->timestamp);
+		requestclipboard(man, atoms[TARGETS], xev->timestamp);
 	}
 }
 
