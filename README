@@ -25,21 +25,4 @@ ENVIRONMENT
      DISPLAY
              The display to start xclipd on.
 
-BUGS
-     xclipd does not support large selection contents and does not implement
-     incremental selection transfer.
-
-     xclipd only keeps textual content on the clipboard.  Images, audio and
-     contents in other formats are not kept.
-
-     xclipd requests textual contents from the original clipboard owner in its
-     plain format; therefore, any textual markup is lost.  In normal
-     conditions, copying a bold or italic text from a browser and pasting it
-     into LibreOffice maintains the bold/italic markup, but pasting it into
-     XTerm loses the markup (only the plain text is pasted).  However, xclipd
-     only saves plain text; so in that example, the markup is lost both when
-     copying into LibreOffice or into XTerm.  Consider that bug as a feature.
-
-     There are probably other bugs.
-
-OpenBSD 7.2                    December 2, 2022                    OpenBSD 7.2
+OpenBSD 7.2                    January 18, 2023                    OpenBSD 7.2

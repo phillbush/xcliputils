@@ -36,19 +36,48 @@ enum {
 	SEL_LAST,
 };
 
+enum {
+	CONTENT_INCR,
+	CONTENT_ERROR,
+	CONTENT_SUCCESS,
+};
+
 struct Manager {
-	struct Content {
-		Atom target;
-		size_t bufsize, buflen;
-		unsigned char *buf;
-	} content;
-	struct {
-		Atom atom;      /* the selection atom */
-		Time time;      /* when we acquired the selection */
-		int own;        /* whether we own the selection */
-	} sels[SEL_LAST];
 	Window win;
-	int running;            /* whether we are running */
+
+	/*
+	 * We save the clipboard data into this buffer structure.
+	 */
+	struct Buffer {
+		struct Buffer *next;
+		size_t buflen;
+		unsigned char *data;
+	} *buffers;
+
+	/*
+	 * For each target, we save the converted data sent by the
+	 * original clipboard owner into the .buf element.  If the
+	 * content is sent incrementally, .incr is True.
+	 */
+	struct Target {
+		struct Target *next;
+		struct Buffer *buf;
+		Atom target;
+		int incr;
+	} *targets;
+
+	/*
+	 * We need to keep track of the selection we can own; whether we
+	 * own them; and the time we owned them.
+	 */
+	struct Selections {
+		Atom atom;              /* the selection atom */
+		Time time;              /* when we acquired the selection */
+		int own;                /* whether we own the selection */
+	} sels[SEL_LAST];
+
+	/* whether we are running */
+	int running;
 };
 
 static Atom atoms[ATOM_LAST];
@@ -80,18 +109,6 @@ static int selids[SEL_LAST] = {
 	[SEL_CLIPBOARD]         = CLIPBOARD,
 	[SEL_PRIMARY]           = PRIMARY,
 };
-
-static unsigned long
-max(unsigned long x, unsigned long y)
-{
-	return x > y ? x : y;
-}
-
-static unsigned long
-min(unsigned long x, unsigned long y)
-{
-	return x < y ? x : y;
-}
 
 static void *
 erealloc(void *p, size_t size)
@@ -134,31 +151,30 @@ createwin(Display *dpy)
 	);
 }
 
-static Atom
-getatomprop(Window win, Atom prop)
+static unsigned long
+getatomsprop(Display *dpy, Window win, Atom prop, Atom *type, Atom **atoms)
 {
 	unsigned char *p;
 	unsigned long len;
 	unsigned long dl;   /* dummy variable */
 	int di;             /* dummy variable */
 	int state;
-	Atom atom, type;
 
 	p = NULL;
-	atom = None;
 	state = XGetWindowProperty(
 		dpy, win,
 		prop, 0L, 0x1FFFFFFF,
 		False,
-		XA_ATOM, &type,
+		*type, type,
 		&di, &len, &dl, &p
 	);
-	if (state != Success || len == 0 || p == NULL)
-		goto done;
-	atom = *(Atom *)p;
-done:
-	XFree(p);
-	return atom;
+	if (state != Success || len == 0 || p == NULL) {
+		*atoms = NULL;
+		XFree(p);
+		return 0;
+	}
+	*atoms = (Atom *)p;
+	return len;
 }
 
 static unsigned long
@@ -261,47 +277,120 @@ ownselection(struct Manager *man, int selnum, Time time)
 }
 
 static void
-cleanbuffer(struct Manager *man)
+cleancontent(struct Manager *man)
 {
-	if (man->content.buf == NULL)
-		return;
-	man->content.buf[0] = '\0';
-	man->content.buflen = 0;
-	man->content.target = None;
+	struct Buffer *buf;
+	struct Target *tgt;
+
+	while (man->buffers != NULL) {
+		buf = man->buffers;
+		man->buffers = man->buffers->next;
+		free(buf->data);
+		free(buf);
+	}
+	while (man->targets != NULL) {
+		tgt = man->targets;
+		man->targets = man->targets->next;
+		free(tgt);
+	}
 }
 
-static void
-getclipboard(struct Manager *man, Atom prop, Atom target)
+static struct Buffer *
+newbuf(struct Manager *man)
 {
+	struct Buffer *buf;
+
+	buf = emalloc(sizeof(*buf));
+	*buf = (struct Buffer){
+		.next = man->buffers,
+		.buflen = 0,
+		.data = NULL,
+	};
+	man->buffers = buf;
+	return buf;
+}
+
+static struct Target *
+newtgt(struct Manager *man)
+{
+	struct Target *tgt;
+
+	tgt = emalloc(sizeof(*tgt));
+	*tgt = (struct Target){
+		.next = man->targets,
+		.buf = NULL,
+		.target = None,
+		.incr = False,
+	};
+	man->targets = tgt;
+	return tgt;
+}
+
+static int
+getcontent(struct Manager *man, Atom prop, struct Buffer **buf_ret)
+{
+	struct Buffer *buf;
 	unsigned char *p;
 	unsigned long len, size;
 	unsigned long dl;   /* dummy variable */
-	int format;
+	int format, status;
 	Atom type;
 
-	if (XGetWindowProperty(dpy, man->win, prop, 0L, 0x1FFFFFFF, True, AnyPropertyType, &type, &format, &len, &dl, &p) != Success || len == 0 || p == NULL) {
+	/*
+	 * Get content of property and append it into buffer *buf_ret.
+	 *
+	 * If *buf_ret is NULL, save into it a new buffer.
+	 *
+	 * Return CONTENT_SUCCESS on success; CONTENT_ERROR on error;
+	 * or CONTENT_INCR on incremental transfers.
+	 */
+	status = XGetWindowProperty(
+		dpy, man->win,
+		prop,
+		0L, 0x1FFFFFFF,
+		True,
+		AnyPropertyType,
+		&type,
+		&format,
+		&len, &dl, &p
+	);
+	if (status != Success || len == 0 || p == NULL) {
 		XFree(p);
-		man->content.buflen = 0;
-		man->content.target = None;
-		return;
+		return CONTENT_ERROR;
 	}
 	if (type == atoms[INCR]) {
-		/* we do not do incremental transfer */
 		XFree(p);
-		cleanbuffer(man);
-		return;
+		buf = newbuf(man);
+		*buf_ret = buf;
+		return CONTENT_INCR;
 	}
-	size = min(len + 1, selmaxsize);
-	len = max(1, size) - 1;
-	if (man->content.bufsize < size) {
-		man->content.buf = erealloc(man->content.buf, size);
-		man->content.bufsize = size;
+	size = len;
+	if (*buf_ret != NULL) {
+		buf = *buf_ret;
+		/* append buffer */
+		size += buf->buflen;
+		buf->data = erealloc(buf->data, size);
+		memcpy(buf->data + buf->buflen, p, len);
+		buf->buflen += len;
+	} else {
+		/* new buffer */
+		for (buf = man->buffers; buf != NULL; buf = buf->next) {
+			if (buf->buflen != len)
+				continue;
+			if (memcmp(buf->data, p, len) == 0) {
+				*buf_ret = buf;
+				goto done;
+			}
+		}
+		buf = newbuf(man);
+		buf->data = emalloc(size);
+		buf->buflen = len;
+		memcpy(buf->data, p, len);
+		*buf_ret = buf;
 	}
-	man->content.buflen = len;
-	memcpy(man->content.buf, p, man->content.buflen);
-	man->content.buf[len] = '\0';
-	man->content.target = target;
+done:
 	XFree(p);
+	return CONTENT_SUCCESS;
 }
 
 static void
@@ -321,7 +410,7 @@ static void
 clean(struct Manager *man)
 {
 	man->running = False;
-	free(man->content.buf);
+	cleancontent(man);
 	XDestroyWindow(dpy, man->win);
 	XCloseDisplay(dpy);
 }
@@ -358,17 +447,12 @@ init(struct Manager *man)
 	xerrorxlib = XSetErrorHandler(xerror);
 
 	man->running = True;
+	man->buffers = NULL;
+	man->targets = NULL;
 	for (i = 0; i < SEL_LAST; i++) {
 		man->sels[i].atom = atoms[selids[i]];
 		man->sels[i].own = False;
 	}
-	man->content = (struct Content){
-		.bufsize = 0,
-		.buflen = 0,
-		.buf = NULL,
-		.target = None,
-	};
-
 	if ((man->win = createwin(dpy)) == None) {
 		XCloseDisplay(dpy);
 		errx(EXIT_FAILURE, "could not create window");
@@ -410,57 +494,97 @@ init(struct Manager *man)
 }
 
 static Bool
-savetargets(struct Manager *man, Window requestor, Atom property, Time time)
+savetargets(struct Manager *man, Window requestor, Atom *targets, unsigned long nitems, Atom property, Time time)
 {
-	unsigned long len, i;
+	unsigned long len;
 	unsigned long dl;   /* dummy variable */
-	int format, status, besttarget;
-	Bool ret;
-	Atom type, *targets;
+	unsigned long nout, i;
+	int format, status;
+	Atom atom, type;
+	Atom *pairs;
+	unsigned char *p;
 
-	status = XGetWindowProperty(
-		dpy, requestor, property,
-		0L, 0x1FFFFFFF,
-		False,
-		XA_ATOM, &type,
-		&format, &len, &dl,
-		(unsigned char **)&targets
-	);
-	if (status != Success || len == 0 || targets == NULL) {
-		XFree(targets);
-		return False;
-	}
-	besttarget = None;
-	for (i = 0; i < len; i++) {
-		if (targets[i] == atoms[UTF8_STRING]) {
-			besttarget = targets[i];
-			break;
-		} else if (targets[i] == atoms[TEXT] || targets[i] == XA_STRING) {
-			besttarget = targets[i];
-		}
-	}
-	ret = False;
-	if (targets[i] != None) {
-		requestclipboard(man, besttarget, time);
-		XChangeProperty(
-			dpy,
-			requestor,
-			property,
-			atoms[_NULL],
-			8L,
-			PropModeReplace,
-			"",
-			0
+	p = NULL;
+	if (nitems == 0) {
+		status = XGetWindowProperty(
+			dpy, requestor, property,
+			0L, 0x1FFFFFFF,
+			False,
+			XA_ATOM, &type,
+			&format, &len, &dl,
+			(unsigned char **)&p
 		);
-		ret = True;
+		if (status != Success || len == 0 || p == NULL) {
+			XFree(p);
+			return False;
+		}
+		targets = (Atom *)p;
+		nitems = len;
 	}
-	XFree(targets);
-	return ret;
+	pairs = emalloc(2 * nitems * sizeof(*pairs));
+	nout = 0;
+	for (i = 0; i < nitems; i++) {
+		atom = targets[i];
+		if (atom == atoms[ATOM_PAIR]
+		|| atom == atoms[COMPOUND_TEXT]
+		|| atom == atoms[CLIPBOARD]
+		|| atom == atoms[CLIPBOARD_MANAGER]
+		|| atom == atoms[DELETE]
+		|| atom == atoms[INCR]
+		|| atom == atoms[MANAGER]
+		|| atom == atoms[MULTIPLE]
+		|| atom == atoms[_NULL]
+		|| atom == atoms[PRIMARY]
+		|| atom == atoms[SAVE_TARGETS]
+		|| atom == atoms[TARGETS]
+		|| atom == atoms[TIMESTAMP]
+		|| atom == atoms[_TIMESTAMP_PROP])
+			continue;
+		pairs[nout++] = atom;
+		pairs[nout++] = atom;
+	}
+	XFree(p);
+	XChangeProperty(
+		dpy,
+		man->win,
+		atoms[MULTIPLE],
+		atoms[ATOM_PAIR],
+		32,
+		PropModeReplace,
+		(unsigned char *)pairs,
+		nout
+	);
+	free(pairs);
+	XConvertSelection(
+		dpy,
+		atoms[CLIPBOARD],
+		atoms[MULTIPLE],
+		atoms[MULTIPLE],
+		man->win,
+		time
+	);
+	return True;
+}
+
+static struct Target *
+gettarget(struct Manager *man, Atom target)
+{
+	struct Target *tgt;
+
+	for (tgt = man->targets; tgt != NULL; tgt = tgt->next)
+		if (target == tgt->target)
+			break;
+	return tgt;
 }
 
 static Bool
 convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom property, Time time)
 {
+	struct Target *tgt;
+	struct Buffer *buf;
+	int ntargets;
+	Atom *targets;
+
 	if (target == atoms[MULTIPLE]) {
 		/*
 		 * A MULTIPLE should be handled when processing a
@@ -499,38 +623,40 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 		 * The list of supported atoms for conversion of the
 		 * manager selection (`CLIPBOARD_MANAGER`) and the
 		 * actual content selections (`CLIPBOARD` and `PRIMARY`)
-		 * are different.  That's why we have a conditional
-		 * operator here.
+		 * are different.
 		 */
+		ntargets = 0;
+		if (selection == atoms[CLIPBOARD_MANAGER]) {
+			targets = emalloc(3 * sizeof(*targets));
+			targets[ntargets++] = atoms[TIMESTAMP];
+			targets[ntargets++] = atoms[SAVE_TARGETS];
+			targets[ntargets++] = atoms[TARGETS];
+		} else {
+			for (tgt = man->targets; tgt != NULL; tgt = tgt->next)
+				ntargets++;
+			targets = emalloc((ntargets + 3) * sizeof(*targets));
+			ntargets = 0;
+			targets[ntargets++] = atoms[TIMESTAMP];
+			targets[ntargets++] = atoms[DELETE];
+			targets[ntargets++] = atoms[MULTIPLE];
+			for (tgt = man->targets; tgt != NULL; tgt = tgt->next) {
+				targets[ntargets++] = tgt->target;
+			}
+		}
 		XChangeProperty(
 			dpy,
 			requestor,
 			property,
 			XA_ATOM, 32,
 			PropModeReplace,
-			(unsigned char *)(selection == atoms[CLIPBOARD_MANAGER]
-			? (Atom[]){
-				atoms[SAVE_TARGETS],
-				atoms[TARGETS],
-				atoms[TIMESTAMP],
-			}
-			: (Atom[]){
-				XA_STRING,
-				atoms[DELETE],
-				atoms[MULTIPLE],
-				atoms[TARGETS],
-				atoms[TEXT],
-				atoms[TIMESTAMP],
-				atoms[UTF8_STRING],
-			}),
-#define NTARGETS_MANAGER 3
-#define NTARGETS_CONTENT 7
-			(selection == atoms[CLIPBOARD_MANAGER] ? NTARGETS_MANAGER : NTARGETS_CONTENT)
+			(unsigned char *)targets,
+			ntargets
 		);
+		free(targets);
 		return True;
 	}
 	if (selection == atoms[CLIPBOARD_MANAGER] && target == atoms[SAVE_TARGETS]) {
-		return savetargets(man, requestor, property, time);
+		return savetargets(man, requestor, NULL, 0, property, time);
 	}
 	if (selection == atoms[CLIPBOARD_MANAGER] || target == atoms[SAVE_TARGETS]) {
 		/*
@@ -541,7 +667,7 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 		return False;
 	}
 	if (target == atoms[DELETE]) {
-		cleanbuffer(man);
+		cleancontent(man);
 		XChangeProperty(
 			dpy,
 			requestor,
@@ -549,29 +675,32 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 			atoms[_NULL],
 			8L,
 			PropModeReplace,
-			"",
+			(unsigned char *)"",
 			0
 		);
 		return True;
 	}
-	if (target == man->content.target ||
-	    target == atoms[TEXT] ||
+	if (target == atoms[TEXT] ||
 	    target == atoms[UTF8_STRING] ||
 	    target == atoms[COMPOUND_TEXT] ||
 	    target == XA_STRING) {
-		XChangeProperty(
-			dpy,
-			requestor,
-			property,
-			target,
-			8L,
-			PropModeReplace,
-			(man->content.buf == NULL ? (unsigned char *)"" : man->content.buf),
-			man->content.buflen
-		);
-		return True;
+	    target = atoms[UTF8_STRING];
 	}
-	return False;
+	if ((tgt = gettarget(man, target)) == NULL)
+		return False;
+	if ((buf = tgt->buf) == NULL)
+		return False;
+	XChangeProperty(
+		dpy,
+		requestor,
+		property,
+		target,
+		8L,
+		PropModeReplace,
+		(buf->data == NULL ? (unsigned char *)"" : buf->data),
+		buf->buflen
+	);
+	return True;
 }
 
 static void
@@ -618,30 +747,90 @@ static void
 selnotify(XEvent *p, struct Manager *man)
 {
 	XSelectionEvent *xev;
-	Atom target;
+	struct Buffer *buf;
+	struct Target *tgt;
+	unsigned long ntargets, i;
+	Atom *targets;
+	Atom type;
+	int status;
 
 	xev = &p->xselection;
-	if (xev->target == atoms[TARGETS]) {
-		target = None;
-		if (xev->property != None)
-			target = getatomprop(xev->requestor, xev->target);
-		if (target == None)
-			target = atoms[UTF8_STRING];
-		requestclipboard(man, target, xev->time);
-	} else if (xev->property != None) {
-		/* conversion succeeded; get clipboard content and own selection */
-		getclipboard(man, xev->property, xev->target);
+	if (xev->selection != atoms[CLIPBOARD])
+		return;
+	if (xev->requestor != man->win)
+		return;
+	if (man->sels[SEL_CLIPBOARD].own) {
+		/* We already own the clipboard */
+		return;
+	}
+	if (xev->target == atoms[TARGETS] && xev->property == None) {
+		/*
+		 * We requested to the original clipboard owner the targets it
+		 * supports.  We got no answer; fallback to XA_STRING.
+		 */
+		requestclipboard(man, XA_STRING, xev->time);
+	} else if (xev->property == atoms[TARGETS]) {
+		targets = None;
+		type = XA_ATOM;
+		ntargets = getatomsprop(xev->display, xev->requestor, xev->property, &type, &targets);
+		if (ntargets == 0 || targets == NULL) {
+			requestclipboard(man, XA_STRING, xev->time);
+		} else {
+			savetargets(man, xev->requestor, targets, ntargets, None, xev->time);
+		}
+		XFree(targets);
+	} else if (xev->property == atoms[MULTIPLE]) {
+		targets = None;
+		type = atoms[ATOM_PAIR];
+		ntargets = getatomsprop(xev->display, xev->requestor, xev->property, &type, &targets);
+		if (ntargets == 0 || targets == NULL) {
+			XFree(targets);
+			requestclipboard(man, XA_STRING, xev->time);
+			return;
+		}
+		ntargets /= 2;
+		for (i = 0; i < ntargets; i += 2) {
+			if (targets[i] == None || targets[i+1] == None)
+				continue;
+			buf = NULL;
+			if ((status = getcontent(man, targets[i], &buf)) == CONTENT_ERROR) {
+				if (buf != NULL) {
+					free(buf->data);
+					free(buf);
+				}
+				continue;
+			}
+			tgt = newtgt(man);
+			tgt->target = targets[i+1];
+			tgt->incr = (status == CONTENT_INCR);
+			tgt->buf = buf;
+		}
+		XFree(targets);
 		ownselection(man, SEL_CLIPBOARD, xev->time);
 		ownselection(man, SEL_PRIMARY, xev->time);
-	} else if (xev->target == atoms[UTF8_STRING]) {
-		/* conversion to UTF8_STRING failed; try COMPOUND_TEXT */
-		requestclipboard(man, atoms[COMPOUND_TEXT], xev->time);
-	} else if (xev->target == atoms[COMPOUND_TEXT]) {
-		/* conversion to COMPOUND_TEXT failed; try SRING */
-		requestclipboard(man, XA_STRING, xev->time);
-	} else if (xev->target == XA_STRING) {
-		/* conversion to STRING failed; try TEXT */
-		requestclipboard(man, atoms[TEXT], xev->time);
+	} else if (xev->property == XA_STRING) {
+		/* conversion succeeded; get clipboard content and own selection */
+		buf = NULL;
+		if (getcontent(man, XA_STRING, &buf) != CONTENT_SUCCESS) {
+			if (buf != NULL) {
+				free(buf->data);
+				free(buf);
+			}
+			return;
+		}
+		if (buf == NULL)
+			return;
+		tgt = newtgt(man);
+		tgt->target = atoms[UTF8_STRING];
+		tgt->buf = buf;
+		tgt = newtgt(man);
+		tgt->target = atoms[TEXT];
+		tgt->buf = buf;
+		tgt = newtgt(man);
+		tgt->target = XA_STRING;
+		tgt->buf = buf;
+		ownselection(man, SEL_CLIPBOARD, xev->time);
+		ownselection(man, SEL_PRIMARY, xev->time);
 	} else {
 		/* failed conversion */
 	}
@@ -727,6 +916,26 @@ done:
 }
 
 static void
+propnotify(XEvent *p, struct Manager *man)
+{
+	XPropertyEvent *xev;
+	struct Target *tgt;
+	struct Buffer *buf;
+
+	xev = &p->xproperty;
+	if (xev->state == PropertyNewValue) {
+		if ((tgt = gettarget(man, xev->atom)) == NULL)
+			return;
+		buf = tgt->buf;
+		if (buf == NULL)
+			return;
+		if (!tgt->incr)
+			return;
+		(void)getcontent(man, xev->atom, &buf);
+	}
+}
+
+static void
 selfixes(XEvent *p, struct Manager *man)
 {
 	XFixesSelectionNotifyEvent *xev;
@@ -736,6 +945,7 @@ selfixes(XEvent *p, struct Manager *man)
 		/* another client got the clipboard; request its content */
 		man->sels[SEL_CLIPBOARD].own = False;
 		man->sels[SEL_PRIMARY].own = False;
+		cleancontent(man);
 		requestclipboard(man, atoms[TARGETS], xev->timestamp);
 	}
 }
@@ -748,6 +958,7 @@ main(void)
 		[SelectionClear]        = selclear,
 		[SelectionNotify]       = selnotify,
 		[SelectionRequest]      = selrequest,
+		[PropertyNotify]        = propnotify,
 	};
 	struct Manager man;
 	XEvent xev;
