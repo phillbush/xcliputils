@@ -10,7 +10,6 @@
 
 enum {
 	ATOM_PAIR,
-	COMPOUND_TEXT,
 	CLIPBOARD,
 	CLIPBOARD_MANAGER,
 	DELETE,
@@ -67,6 +66,18 @@ struct Manager {
 	} *targets;
 
 	/*
+	 * When a client request the clipboard but its content is too
+	 * large, we perform incremental transfer.  We keep track of
+	 * each incremental transfer in a list of transfers.
+	 */
+	struct Transfer {
+		struct Transfer *prev, *next;
+		Window requestor;
+		Atom property, target;
+		size_t len;             /* how much have we transferred */
+	} *transfers;
+
+	/*
 	 * We need to keep track of the selection we can own; whether we
 	 * own them; and the time we owned them.
 	 */
@@ -75,6 +86,13 @@ struct Manager {
 		Time time;              /* when we acquired the selection */
 		int own;                /* whether we own the selection */
 	} sels[SEL_LAST];
+
+	enum {
+		STEP_TARGET,            /* we have requested the TARGETS action */
+		STEP_SAVE,              /* we have requested the MULTIPLE action */
+		STEP_FALLBACK,          /* we have requested the STRING content */
+		STEP_COMPLETE,          /* clipboard request either succeeded or failed */
+	} step;                         /* in which step of request we are */
 
 	/* whether we are running */
 	int running;
@@ -88,7 +106,6 @@ static unsigned long selmaxsize = 0;
 static int (*xerrorxlib)(Display *, XErrorEvent *);
 static char *atomnames[ATOM_LAST] = {
 	[ATOM_PAIR]             = "ATOM_PAIR",
-	[COMPOUND_TEXT]         = "COMPOUND_TEXT",
 	[CLIPBOARD]             = "CLIPBOARD",
 	[CLIPBOARD_MANAGER]     = "CLIPBOARD_MANAGER",
 	[DELETE]                = "DELETE",
@@ -114,7 +131,7 @@ static void *
 erealloc(void *p, size_t size)
 {
 	if ((p = realloc(p, size)) == NULL)
-		err(1, "realloc");
+		err(EXIT_FAILURE, "realloc");
 	return p;
 }
 
@@ -124,17 +141,17 @@ emalloc(size_t size)
 	void *p;
 
 	if ((p = malloc(size)) == NULL)
-		err(1, "malloc");
+		err(EXIT_FAILURE, "malloc");
 	return p;
 }
 
 static int
 xerror(Display *dpy, XErrorEvent *e)
 {
-	if (e->error_code == BadWindow || e->error_code == BadAlloc)
+	if (e->error_code == BadWindow)
 		return 0;
 	return xerrorxlib(dpy, e);
-	exit(1);        /* unreached */
+	exit(EXIT_FAILURE);     /* unreached */
 }
 
 static Window
@@ -281,6 +298,7 @@ cleancontent(struct Manager *man)
 {
 	struct Buffer *buf;
 	struct Target *tgt;
+	struct Transfer *transfer;
 
 	while (man->buffers != NULL) {
 		buf = man->buffers;
@@ -292,6 +310,21 @@ cleancontent(struct Manager *man)
 		tgt = man->targets;
 		man->targets = man->targets->next;
 		free(tgt);
+	}
+	while (man->transfers != NULL) {
+		transfer = man->transfers;
+		man->transfers = man->transfers->next;
+		XChangeProperty(
+			dpy,
+			transfer->requestor,
+			transfer->property,
+			transfer->target,
+			8L,
+			PropModeReplace,
+			NULL,
+			0
+		);
+		free(transfer);
 	}
 }
 
@@ -324,6 +357,25 @@ newtgt(struct Manager *man)
 	};
 	man->targets = tgt;
 	return tgt;
+}
+
+static void
+newtransfer(struct Manager *man, Window requestor, Atom property, Atom target)
+{
+	struct Transfer *transfer;
+
+	transfer = emalloc(sizeof(*transfer));
+	*transfer = (struct Transfer){
+		.prev = NULL,
+		.next = man->transfers,
+		.requestor = requestor,
+		.property = property,
+		.target = target,
+		.len = 0,
+	};
+	if (man->transfers != NULL)
+		man->transfers->prev = transfer;
+	man->transfers = transfer;
 }
 
 static int
@@ -418,6 +470,7 @@ clean(struct Manager *man)
 static void
 init(struct Manager *man)
 {
+	Time time;
 	int i;
 
 	/*
@@ -445,10 +498,12 @@ init(struct Manager *man)
 	root = DefaultRootWindow(dpy);
 	XInternAtoms(dpy, atomnames, ATOM_LAST, False, atoms);
 	xerrorxlib = XSetErrorHandler(xerror);
-
-	man->running = True;
-	man->buffers = NULL;
-	man->targets = NULL;
+	*man = (struct Manager){
+		.running = True,
+		.buffers = NULL,
+		.targets = NULL,
+		.step = STEP_TARGET,
+	};
 	for (i = 0; i < SEL_LAST; i++) {
 		man->sels[i].atom = atoms[selids[i]];
 		man->sels[i].own = False;
@@ -461,7 +516,8 @@ init(struct Manager *man)
 		clean(man);
 		errx(EXIT_FAILURE, "there's already a clipboard manager running");
 	}
-	ownselection(man, SEL_MANAGER, getservertime(dpy, man->win));
+	time = getservertime(dpy, man->win);
+	ownselection(man, SEL_MANAGER, time);
 	if (XGetSelectionOwner(dpy, atoms[CLIPBOARD_MANAGER]) != man->win) {
 		clean(man);
 		errx(EXIT_FAILURE, "could not own manager selection");
@@ -489,7 +545,7 @@ init(struct Manager *man)
 	}
 	if (selmaxsize > SELMAXSIZE)
 		selmaxsize = SELMAXSIZE;
-	ownselection(man, SEL_CLIPBOARD, man->sels[SEL_MANAGER].time);
+	requestclipboard(man, atoms[TARGETS], time);
 	return;
 }
 
@@ -525,20 +581,19 @@ savetargets(struct Manager *man, Window requestor, Atom *targets, unsigned long 
 	nout = 0;
 	for (i = 0; i < nitems; i++) {
 		atom = targets[i];
-		if (atom == atoms[ATOM_PAIR]
-		|| atom == atoms[COMPOUND_TEXT]
-		|| atom == atoms[CLIPBOARD]
-		|| atom == atoms[CLIPBOARD_MANAGER]
-		|| atom == atoms[DELETE]
-		|| atom == atoms[INCR]
-		|| atom == atoms[MANAGER]
-		|| atom == atoms[MULTIPLE]
-		|| atom == atoms[_NULL]
-		|| atom == atoms[PRIMARY]
-		|| atom == atoms[SAVE_TARGETS]
-		|| atom == atoms[TARGETS]
-		|| atom == atoms[TIMESTAMP]
-		|| atom == atoms[_TIMESTAMP_PROP])
+		if (atom == atoms[ATOM_PAIR] ||
+		    atom == atoms[CLIPBOARD] ||
+		    atom == atoms[CLIPBOARD_MANAGER] ||
+		    atom == atoms[DELETE] ||
+		    atom == atoms[INCR] ||
+		    atom == atoms[MANAGER] ||
+		    atom == atoms[MULTIPLE] ||
+		    atom == atoms[_NULL] ||
+		    atom == atoms[PRIMARY] ||
+		    atom == atoms[SAVE_TARGETS] ||
+		    atom == atoms[TARGETS] ||
+		    atom == atoms[TIMESTAMP] ||
+		    atom == atoms[_TIMESTAMP_PROP])
 			continue;
 		pairs[nout++] = atom;
 		pairs[nout++] = atom;
@@ -575,6 +630,30 @@ gettarget(struct Manager *man, Atom target)
 		if (target == tgt->target)
 			break;
 	return tgt;
+}
+
+static struct Transfer *
+gettransfer(struct Manager *man, Window requestor, Atom property)
+{
+	struct Transfer *transfer;
+
+	for (transfer = man->transfers; transfer != NULL; transfer = transfer->next)
+		if (requestor == transfer->requestor && property == transfer->property)
+			break;
+	return transfer;
+}
+
+static void
+deltransfer(struct Manager *man, struct Transfer *transfer)
+{
+	if (transfer->prev != NULL) {
+		transfer->prev->next = transfer->next;
+	} else {
+		man->transfers = transfer->next;
+	}
+	if (transfer->next != NULL) {
+		transfer->next->prev = transfer->prev;
+	}
 }
 
 static Bool
@@ -680,26 +759,35 @@ convert(struct Manager *man, Window requestor, Atom selection, Atom target, Atom
 		);
 		return True;
 	}
-	if (target == atoms[TEXT] ||
-	    target == atoms[UTF8_STRING] ||
-	    target == atoms[COMPOUND_TEXT] ||
-	    target == XA_STRING) {
-	    target = atoms[UTF8_STRING];
-	}
 	if ((tgt = gettarget(man, target)) == NULL)
 		return False;
 	if ((buf = tgt->buf) == NULL)
 		return False;
-	XChangeProperty(
-		dpy,
-		requestor,
-		property,
-		target,
-		8L,
-		PropModeReplace,
-		(buf->data == NULL ? (unsigned char *)"" : buf->data),
-		buf->buflen
-	);
+	if (buf->buflen > selmaxsize) {
+		XSelectInput(dpy, requestor, StructureNotifyMask | PropertyChangeMask);
+		XChangeProperty(
+			dpy,
+			requestor,
+			property,
+			atoms[INCR],
+			32L,
+			PropModeReplace,
+			(unsigned char *)&buf->buflen,
+			1
+		);
+		newtransfer(man, requestor, property, target);
+	} else {
+		XChangeProperty(
+			dpy,
+			requestor,
+			property,
+			target,
+			8L,
+			PropModeReplace,
+			(buf->data == NULL ? (unsigned char *)"" : buf->data),
+			buf->buflen
+		);
+	}
 	return True;
 }
 
@@ -754,46 +842,73 @@ selnotify(XEvent *p, struct Manager *man)
 	Atom type;
 	int status;
 
+	targets = NULL;
 	xev = &p->xselection;
 	if (xev->selection != atoms[CLIPBOARD])
 		return;
 	if (xev->requestor != man->win)
 		return;
-	if (man->sels[SEL_CLIPBOARD].own) {
-		/* We already own the clipboard */
+	if (man->sels[SEL_CLIPBOARD].own)
 		return;
-	}
-	if (xev->target == atoms[TARGETS] && xev->property == None) {
+	switch (man->step) {
+	case STEP_TARGET:
 		/*
-		 * We requested to the original clipboard owner the targets it
-		 * supports.  We got no answer; fallback to XA_STRING.
+		 * We have requested the original clipboard owner the
+		 * targets it supports.
 		 */
-		requestclipboard(man, XA_STRING, xev->time);
-	} else if (xev->property == atoms[TARGETS]) {
-		targets = None;
+		if (xev->target != atoms[TARGETS])
+			break;
+		if (xev->property == None)
+			goto error;
+		/* We got an answer! */
 		type = XA_ATOM;
-		ntargets = getatomsprop(xev->display, xev->requestor, xev->property, &type, &targets);
-		if (ntargets == 0 || targets == NULL) {
-			requestclipboard(man, XA_STRING, xev->time);
-		} else {
-			savetargets(man, xev->requestor, targets, ntargets, None, xev->time);
-		}
-		XFree(targets);
-	} else if (xev->property == atoms[MULTIPLE]) {
-		targets = None;
+		ntargets = getatomsprop(
+			xev->display,
+			xev->requestor,
+			xev->property,
+			&type,
+			&targets
+		);
+		if (ntargets == 0 || targets == NULL)
+			goto error;
+		savetargets(
+			man,
+			xev->requestor,
+			targets,
+			ntargets,
+			None,
+			xev->time
+		);
+		man->step = STEP_SAVE;
+		break;
+	case STEP_SAVE:
+		/*
+		 * We have requested the original clipboard owner to
+		 * convert the clipboard content for each target it
+		 * supports into properties of our window.
+		 */
+		if (xev->target != atoms[MULTIPLE])
+			break;
+		if (xev->property == None)
+			goto error;
+		/* We got an answer! */
 		type = atoms[ATOM_PAIR];
-		ntargets = getatomsprop(xev->display, xev->requestor, xev->property, &type, &targets);
-		if (ntargets == 0 || targets == NULL) {
-			XFree(targets);
-			requestclipboard(man, XA_STRING, xev->time);
-			return;
-		}
+		ntargets = getatomsprop(
+			xev->display,
+			xev->requestor,
+			xev->property,
+			&type,
+			&targets
+		);
+		if (ntargets == 0 || targets == NULL)
+			goto error;
 		ntargets /= 2;
 		for (i = 0; i < ntargets; i += 2) {
 			if (targets[i] == None || targets[i+1] == None)
 				continue;
 			buf = NULL;
-			if ((status = getcontent(man, targets[i], &buf)) == CONTENT_ERROR) {
+			status = getcontent(man, targets[i], &buf);
+			if (status == CONTENT_ERROR) {
 				if (buf != NULL) {
 					free(buf->data);
 					free(buf);
@@ -805,34 +920,65 @@ selnotify(XEvent *p, struct Manager *man)
 			tgt->incr = (status == CONTENT_INCR);
 			tgt->buf = buf;
 		}
-		XFree(targets);
 		ownselection(man, SEL_CLIPBOARD, xev->time);
 		ownselection(man, SEL_PRIMARY, xev->time);
-	} else if (xev->property == XA_STRING) {
-		/* conversion succeeded; get clipboard content and own selection */
+		man->step = STEP_COMPLETE;
+		break;
+	case STEP_FALLBACK:
+		/*
+		 * Our attempts to convert the clipboard into the
+		 * targets the original owner knows failed.  We have
+		 * then fallen back to get the clipboard content as
+		 * a simple string.
+		 */
+		if (xev->target != XA_STRING)
+			break;
+		if (xev->property == None)
+			goto error;
+		/* We got an answer! */
 		buf = NULL;
 		if (getcontent(man, XA_STRING, &buf) != CONTENT_SUCCESS) {
 			if (buf != NULL) {
 				free(buf->data);
 				free(buf);
 			}
-			return;
+			goto error;
 		}
 		if (buf == NULL)
-			return;
-		tgt = newtgt(man);
-		tgt->target = atoms[UTF8_STRING];
-		tgt->buf = buf;
-		tgt = newtgt(man);
-		tgt->target = atoms[TEXT];
-		tgt->buf = buf;
-		tgt = newtgt(man);
-		tgt->target = XA_STRING;
-		tgt->buf = buf;
+			goto error;
+		for (i = 0; i < 3; i++) {
+			tgt = newtgt(man);
+			tgt->target = (Atom []){
+				atoms[UTF8_STRING],
+				atoms[TEXT],
+				XA_STRING
+			}[i];
+			tgt->buf = buf;
+		}
 		ownselection(man, SEL_CLIPBOARD, xev->time);
 		ownselection(man, SEL_PRIMARY, xev->time);
+		man->step = STEP_COMPLETE;
+		break;
+	case STEP_COMPLETE:
+		break;
+	}
+	XFree(targets);
+	return;
+error:
+	XFree(targets);
+	if (man->step == STEP_FALLBACK) {
+		/*
+		 * We have already fallen back to the fallback state.
+		 * Contemplate our failure.
+		 */
+		man->step = STEP_COMPLETE;
 	} else {
-		/* failed conversion */
+		/*
+		 * Try to get the clipboard as a simple string as last
+		 * resourt.
+		 */
+		requestclipboard(man, XA_STRING, xev->time);
+		man->step = STEP_FALLBACK;
 	}
 }
 
@@ -919,11 +1065,14 @@ static void
 propnotify(XEvent *p, struct Manager *man)
 {
 	XPropertyEvent *xev;
+	struct Transfer *transfer;
 	struct Target *tgt;
 	struct Buffer *buf;
+	size_t len;
 
 	xev = &p->xproperty;
 	if (xev->state == PropertyNewValue) {
+		/* receive incrementally */
 		if ((tgt = gettarget(man, xev->atom)) == NULL)
 			return;
 		buf = tgt->buf;
@@ -932,6 +1081,37 @@ propnotify(XEvent *p, struct Manager *man)
 		if (!tgt->incr)
 			return;
 		(void)getcontent(man, xev->atom, &buf);
+	} else if (xev->state == PropertyDelete) {
+		/* send incrementally */
+		if (xev->window == man->win)
+			return;
+		if ((transfer = gettransfer(man, xev->window, xev->atom)) == NULL)
+			return;
+		if ((tgt = gettarget(man, transfer->target)) == NULL)
+			return;
+		buf = tgt->buf;
+		if (buf == NULL)
+			return;
+		if (transfer->len >= buf->buflen)
+			transfer->len = buf->buflen;
+		len = buf->buflen - transfer->len;
+		if (len > selmaxsize)
+			len = selmaxsize;
+		XChangeProperty(
+			xev->display,
+			xev->window,
+			xev->atom,
+			transfer->target,
+			8L,
+			PropModeReplace,
+			(buf->data == NULL ? (unsigned char *)"" : buf->data + transfer->len),
+			len
+		);
+		if (transfer->len >= buf->buflen) {
+			deltransfer(man, transfer);
+		} else {
+			transfer->len += len;
+		}
 	}
 }
 
@@ -943,6 +1123,7 @@ selfixes(XEvent *p, struct Manager *man)
 	xev = (XFixesSelectionNotifyEvent *)p;
 	if (xev->selection == atoms[CLIPBOARD] && xev->owner != man->win) {
 		/* another client got the clipboard; request its content */
+		man->step = STEP_TARGET;
 		man->sels[SEL_CLIPBOARD].own = False;
 		man->sels[SEL_PRIMARY].own = False;
 		cleancontent(man);
@@ -967,7 +1148,7 @@ main(void)
 	while (man.running && !XNextEvent(dpy, &xev)) {
 		if (xev.type == xfixes + XFixesSelectionNotify) {
 			selfixes(&xev, &man);
-		} else if (xevents[xev.type] != NULL) {
+		} else if (xev.type < LASTEvent && xevents[xev.type] != NULL) {
 			(*xevents[xev.type])(&xev, &man);
 		}
 	}
