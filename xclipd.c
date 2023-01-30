@@ -406,15 +406,15 @@ getcontent(struct Manager *man, Atom prop, struct Buffer **buf_ret)
 		&format,
 		&len, &dl, &p
 	);
-	if (status != Success || len == 0 || p == NULL) {
-		XFree(p);
-		return CONTENT_ERROR;
-	}
 	if (type == atoms[INCR]) {
 		XFree(p);
 		buf = newbuf(man);
 		*buf_ret = buf;
 		return CONTENT_INCR;
+	}
+	if (status != Success || len == 0 || p == NULL) {
+		XFree(p);
+		return CONTENT_ERROR;
 	}
 	size = len;
 	if (*buf_ret != NULL) {
@@ -599,25 +599,41 @@ savetargets(struct Manager *man, Window requestor, Atom *targets, unsigned long 
 		pairs[nout++] = atom;
 	}
 	XFree(p);
-	XChangeProperty(
-		dpy,
-		man->win,
-		atoms[MULTIPLE],
-		atoms[ATOM_PAIR],
-		32,
-		PropModeReplace,
-		(unsigned char *)pairs,
-		nout
-	);
+	if (nout == 2) {
+		/*
+		 * The client owning the clipboard only supports a
+		 * single target; so we ask it to convert just the
+		 * target we want.
+		 */
+		XConvertSelection(
+			dpy,
+			atoms[CLIPBOARD],
+			*pairs,
+			*pairs,
+			man->win,
+			time
+		);
+	} else {
+		XChangeProperty(
+			dpy,
+			man->win,
+			atoms[MULTIPLE],
+			atoms[ATOM_PAIR],
+			32,
+			PropModeReplace,
+			(unsigned char *)pairs,
+			nout
+		);
+		XConvertSelection(
+			dpy,
+			atoms[CLIPBOARD],
+			atoms[MULTIPLE],
+			atoms[MULTIPLE],
+			man->win,
+			time
+		);
+	}
 	free(pairs);
-	XConvertSelection(
-		dpy,
-		atoms[CLIPBOARD],
-		atoms[MULTIPLE],
-		atoms[MULTIPLE],
-		man->win,
-		time
-	);
 	return True;
 }
 
@@ -839,8 +855,9 @@ selnotify(XEvent *p, struct Manager *man)
 	struct Target *tgt;
 	unsigned long ntargets, i;
 	Atom *targets;
-	Atom type;
+	Atom type, atom, prop;
 	int status;
+	Bool success;
 
 	targets = NULL;
 	xev = &p->xselection;
@@ -871,7 +888,7 @@ selnotify(XEvent *p, struct Manager *man)
 		);
 		if (ntargets == 0 || targets == NULL)
 			goto error;
-		savetargets(
+		success = savetargets(
 			man,
 			xev->requestor,
 			targets,
@@ -879,6 +896,8 @@ selnotify(XEvent *p, struct Manager *man)
 			None,
 			xev->time
 		);
+		if (!success)
+			goto error;
 		man->step = STEP_SAVE;
 		break;
 	case STEP_SAVE:
@@ -887,27 +906,36 @@ selnotify(XEvent *p, struct Manager *man)
 		 * convert the clipboard content for each target it
 		 * supports into properties of our window.
 		 */
-		if (xev->target != atoms[MULTIPLE])
-			break;
-		if (xev->property == None)
+		if (xev->property == None || xev->target == None)
 			goto error;
 		/* We got an answer! */
-		type = atoms[ATOM_PAIR];
-		ntargets = getatomsprop(
-			xev->display,
-			xev->requestor,
-			xev->property,
-			&type,
-			&targets
-		);
-		if (ntargets == 0 || targets == NULL)
-			goto error;
-		ntargets /= 2;
+		if (xev->target == atoms[MULTIPLE]) {
+			type = atoms[ATOM_PAIR];
+			ntargets = getatomsprop(
+				xev->display,
+				xev->requestor,
+				xev->property,
+				&type,
+				&targets
+			);
+			if (ntargets == 0 || targets == NULL)
+				goto error;
+			ntargets /= 2;
+		} else {
+			ntargets = 1;
+		}
 		for (i = 0; i < ntargets; i += 2) {
-			if (targets[i] == None || targets[i+1] == None)
+			if (targets != NULL) {
+				prop = targets[i];
+				atom = targets[i+1];
+			} else {
+				prop = xev->property;
+				atom = xev->target;
+			}
+			if (prop == None || atom == None)
 				continue;
 			buf = NULL;
-			status = getcontent(man, targets[i], &buf);
+			status = getcontent(man, prop, &buf);
 			if (status == CONTENT_ERROR) {
 				if (buf != NULL) {
 					free(buf->data);
@@ -916,7 +944,7 @@ selnotify(XEvent *p, struct Manager *man)
 				continue;
 			}
 			tgt = newtgt(man);
-			tgt->target = targets[i+1];
+			tgt->target = atom;
 			tgt->incr = (status == CONTENT_INCR);
 			tgt->buf = buf;
 		}
