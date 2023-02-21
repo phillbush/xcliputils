@@ -1,6 +1,7 @@
 PROG = xclipd
-OBJS = ${PROG:=.o}
-SRCS = ${PROG:=.c}
+OBJS = ${PROG:=.o} ctrlsel.o
+HEAD = ctrlsel.h
+SRCS = ${OBJS:.o=.c} ctrlsel.h
 MANS = ${PROG:=.1}
 
 PREFIX ?= /usr/local
@@ -14,10 +15,14 @@ DEFS = -D_POSIX_C_SOURCE=200809L -DGNU_SOURCE -D_BSD_SOURCE
 INCS = -I${LOCALINC} -I${X11INC}
 LIBS = -L${LOCALLIB} -L${X11LIB} -lX11 -lXfixes
 
+LINT = splint
+
 all: ${PROG}
 
 ${PROG}: ${OBJS}
 	${CC} -o $@ ${OBJS} ${LIBS} ${LDFLAGS}
+
+${OBJS}: ctrlsel.h
 
 .c.o:
 	${CC} -std=c99 -pedantic ${DEFS} ${INCS} ${CFLAGS} ${CPPFLAGS} -c $<
@@ -27,6 +32,9 @@ README: ${MANS}
 
 tags: ${SRCS}
 	ctags ${SRCS}
+
+lint: ${SRCS}
+	-${LINT} ${DEFS} ${INCS} ${CPPFLAGS} ${LINTFLAGS} ${SRCS}
 
 clean:
 	rm -f ${OBJS} ${PROG} ${PROG:=.core} tags
