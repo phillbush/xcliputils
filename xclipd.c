@@ -7,6 +7,8 @@
 
 #include "ctrlsel.h"
 
+#define NSTEPS  3
+
 enum Atom {
 	ATOM_PAIR,
 	CLIPBOARD,
@@ -27,9 +29,11 @@ enum Atom {
 };
 
 enum Event {
+	EV_INTERNAL,    /* internal event */
 	EV_NEWOWNER,    /* a new owner acquired the clipboard */
 	EV_CLOSE,       /* we should close the manager */
-	EV_OTHER,       /* another event (maybe related to a selection context) */
+	EV_ERROR,
+	EV_OK,
 };
 
 struct Manager {
@@ -99,20 +103,6 @@ freetargets(struct Manager *manager)
 	manager->ntargets = 0;
 }
 
-static void
-close(struct Manager *manager, int running)
-{
-	if (running) {
-		freetargets(manager);
-		ctrlsel_disown(manager->context);
-	}
-	if (manager->window != None)
-		(void)XDestroyWindow(display, manager->window);
-	if (display != NULL)
-		(void)XCloseDisplay(display);
-	exit(EXIT_FAILURE);
-}
-
 static enum Event
 nextevent(struct Manager *manager, XEvent *xev)
 {
@@ -166,30 +156,32 @@ loop:
 		 */
 		return EV_CLOSE;
 	}
-	return EV_OTHER;
+	return EV_INTERNAL;
 }
 
-static void
+static enum Event
 waitowner(struct Manager *manager)
 {
 	XEvent xev;
+	enum Event retval = EV_OK;
 
-	freetargets(manager);
-	for (;;) {
-		switch(nextevent(manager, &xev)) {
-		case EV_NEWOWNER:
-			return;
-		case EV_CLOSE:
-			close(manager, 1);
-			exit(EXIT_FAILURE);     /* unreachable */
-		default:
-			break;
-		}
-	}
-	/* unreachable */
+	for (;;)
+		if ((retval = nextevent(manager, &xev)) != EV_OK)
+			return retval;
+	return EV_OK;           /* unreachable */
 }
 
-static int
+static enum Event
+translate(int receive)
+{
+	if (receive == CTRLSEL_RECEIVED)
+		return EV_OK;
+	if (receive == CTRLSEL_ERROR)
+		return EV_ERROR;
+	return EV_INTERNAL;
+}
+
+static enum Event
 gettargets(struct Manager *manager)
 {
 	XEvent xev;
@@ -198,8 +190,8 @@ gettargets(struct Manager *manager)
 	unsigned long i;
 	Atom target;
 	int success;
+	enum Event retval = EV_OK;
 
-	freetargets(manager);
 	ctrlsel_filltarget(atoms[TARGETS], XA_ATOM, 32, NULL, 0, &meta);
 	success = ctrlsel_request(
 		display,
@@ -210,32 +202,16 @@ gettargets(struct Manager *manager)
 		&context
 	);
 	if (!success)
-		return 0;
+		return EV_ERROR;
 	for (;;) {
-		switch(nextevent(manager, &xev)) {
-		case EV_NEWOWNER:
-			ctrlsel_cancel(&context);
-			freetargets(manager);
-			return 0;
-		case EV_CLOSE:
-			ctrlsel_cancel(&context);
-			close(manager, 1);
-			exit(EXIT_FAILURE);     /* unreachable */
-		default:
+		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		}
-		switch(ctrlsel_receive(&context, &xev)) {
-		case CTRLSEL_RECEIVED:
-			goto done;
-		case CTRLSEL_ERROR:
-			ctrlsel_cancel(&context);
-			return 0;
-		default:
+		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
 			break;
-		}
 	}
-done:
 	ctrlsel_cancel(&context);
+	if (retval != EV_OK)
+		goto error;
 	if (meta.buffer == NULL || meta.nitems == 0)
 		goto error;
 	if (meta.format != 32 || meta.type != XA_ATOM)
@@ -271,19 +247,18 @@ done:
 		);
 		manager->ntargets++;
 	}
-	free(meta.buffer);
-	return 1;
 error:
 	free(meta.buffer);
-	return 0;
+	return retval;
 }
 
-static int
+static enum Event
 savetargets(struct Manager *manager)
 {
 	XEvent xev;
 	struct CtrlSelContext context;
 	int success;
+	enum Event retval = EV_OK;
 
 	success = ctrlsel_request(
 		display,
@@ -295,39 +270,23 @@ savetargets(struct Manager *manager)
 		&context
 	);
 	if (!success)
-		return 0;
+		return EV_ERROR;
 	for (;;) {
-		switch(nextevent(manager, &xev)) {
-		case EV_NEWOWNER:
-			ctrlsel_cancel(&context);
-			freetargets(manager);
-			return 0;
-		case EV_CLOSE:
-			ctrlsel_cancel(&context);
-			close(manager, 1);
-			exit(EXIT_FAILURE);     /* unreachable */
-		default:
+		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		}
-		switch(ctrlsel_receive(&context, &xev)) {
-		case CTRLSEL_RECEIVED:
-			ctrlsel_cancel(&context);
-			return 1;
-		case CTRLSEL_ERROR:
-			ctrlsel_cancel(&context);
-			return 0;
-		default:
+		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
 			break;
-		}
 	}
-	/* unreachable */
+	ctrlsel_cancel(&context);
+	return retval;
 }
 
-static void
+static enum Event
 ownclipboard(struct Manager *manager)
 {
 	XEvent xev;
 	struct CtrlSelContext clipboard, primary;
+	enum Event retval = EV_OK;
 
 	ctrlsel_setowner(
 		display,
@@ -350,55 +309,45 @@ ownclipboard(struct Manager *manager)
 		&primary
 	);
 	for (;;) {
-		switch(nextevent(manager, &xev)) {
-		case EV_NEWOWNER:
-			ctrlsel_disown(&clipboard);
-			ctrlsel_disown(&primary);
-			freetargets(manager);
-			return;
-		case EV_CLOSE:
-			ctrlsel_disown(&clipboard);
-			ctrlsel_disown(&primary);
-			close(manager, 1);
-			exit(EXIT_FAILURE);     /* unreachable */
-		default:
+		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		}
 		(void)ctrlsel_send(&clipboard, &xev);
 		(void)ctrlsel_send(&primary, &xev);
 	}
-	/* unreachable */
+	ctrlsel_disown(&clipboard);
+	ctrlsel_disown(&primary);
+	return retval;
 }
 
-static void
+static int
 init(struct Manager *manager)
 {
 	int i;
 
 	if ((display = XOpenDisplay(NULL)) == NULL) {
 		warnx("could not connect to X server");
-		close(manager, 0);
+		goto error;
 	}
 	if (!XFixesQueryExtension(display, &xfixes, &i)) {
 		warnx("could not use XFixes");
-		close(manager, 0);
+		goto error;
 	}
 	if (!XInternAtoms(display, atomnames, ATOM_LAST, False, atoms)) {
 		warnx("could not intern atoms");
-		close(manager, 0);
+		goto error;
 	}
 	if ((manager->window = createwindow(display)) == None) {
 		warnx("could not create manager window");
-		close(manager, 0);
+		goto error;
 	}
 	if (XGetSelectionOwner(display, atoms[CLIPBOARD_MANAGER]) != None) {
 		warnx("there's already a clipboard manager running");
-		close(manager, 0);
+		goto error;
 	}
 	if (!ctrlsel_setowner(display, manager->window, atoms[CLIPBOARD_MANAGER],
 	                        CurrentTime, 1, NULL, 0, manager->context)) {
 		warnx("could not own manager selection");
-		close(manager, 0);
+		goto error;
 	}
 	XFixesSelectSelectionInput(
 		display,
@@ -407,13 +356,23 @@ init(struct Manager *manager)
 		XFixesSetSelectionOwnerNotifyMask
 	);
 	xerrorxlib = XSetErrorHandler(xerror);
+	return 1;
+error:
+	return 0;
 }
 
 int
 main(void)
 {
+	enum Event (*steps[NSTEPS])(struct Manager *manager) = {
+		[0] = gettargets,
+		[1] = savetargets,
+		[2] = ownclipboard,
+	};
 	struct CtrlSelContext contex;
 	struct Manager manager;
+	enum Event ev;
+	int i;
 
 	manager = (struct Manager){
 		.time = CurrentTime,
@@ -423,17 +382,23 @@ main(void)
 		.targets = NULL,
 		.context = &contex,
 	};
-	init(&manager);
+	if (!init(&manager))
+		goto done;
 	for (;;) {
-		if (manager.dowait)
-			waitowner(&manager);
-		manager.dowait = 1;
-		if (!gettargets(&manager))
-			continue;
-		if (!savetargets(&manager))
-			continue;
-		ownclipboard(&manager);
+		for (i = 0; i < NSTEPS; i++)
+			if ((ev = (*steps[i])(&manager)) != EV_OK)
+				break;
+		freetargets(&manager);
+		if (ev == EV_ERROR)
+			ev = waitowner(&manager);
+		if (ev == EV_CLOSE)
+			break;
 	}
-	/* unreachable */
+	ctrlsel_disown(manager.context);
+done:
+	if (manager.window != None)
+		(void)XDestroyWindow(display, manager.window);
+	if (display != NULL)
+		(void)XCloseDisplay(display);
 	return EXIT_FAILURE;
 }
