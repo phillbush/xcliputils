@@ -365,9 +365,28 @@ int
 main(void)
 {
 	enum Event (*steps[NSTEPS])(struct Manager *manager) = {
+		/*
+		 * First we request the original clipboard owner the
+		 * targets it supports.
+		 */
 		[0] = gettargets,
+
+		/*
+		 * Then we request the original clipboard owner to
+		 * convert the clipboard into those targets for us.
+		 */
 		[1] = savetargets,
+
+		/*
+		 * Then we get the ownership of the clipboard, supplying
+		 * to any requestors the content that the previous owner
+		 * gave to us.
+		 */
 		[2] = ownclipboard,
+
+		/*
+		 * We'll loop through all those steps in the main loop.
+		 */
 	};
 	struct CtrlSelContext contex;
 	struct Manager manager;
