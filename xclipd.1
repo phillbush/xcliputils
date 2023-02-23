@@ -2,37 +2,89 @@
 .Dt XCLIPD 1
 .Os
 .Sh NAME
-.Nm xclipd
-.Nd clipboard manager daemon
+.Nm xclipd ,
+.Nm xclipin ,
+.Nm xclipout ,
+.Nm xclipowner
+.Nd clipboard management utilities
 .Sh SYNOPSIS
-.Nm
+.Nm xclipd
+.Nm xclipin
+.Op Fl pw
+.Op Fl t Ar target
+.Op Ar file
+.Nm xclipout
+.Op Fl p
+.Op Fl t Ar target
+.Nm xclipowner
+.Op Fl pw
 .Sh DESCRIPTION
-.Nm
+.Nm xclipd
 maintains the contents of the
 .Ic CLIPBOARD
-selection, making it possible to copy the contents of a window into the
-clipboard and to close that window without losing the copied content.
+selection, making it possible to close a window without losing the copied data.
 .Pp
-.Nm
+.Nm xclipd
 also keeps the
 .Ic PRIMARY
 selection synchronized with the
 .Ic CLIPBOARD
 selection.
-Whenever something is copied into the
+It makes possible that, whenever something is copied into the
 .Ic CLIPBOARD
-selection, that content can also be requested from the
+selection, the copied data can also be requested from the
 .Ic PRIMARY
-selection as well, but not the other way around.
+selection as well (but not the other way around).
 .Pp
-.Nm
+.Nm xclipd
 does not daemonize itself;
 therefore, it should be run in the background.
+.Pp
+.Nm xclipin
+reads data from the given file or standard input and makes it available as the
+.Ic STRING
+target in the
+.Ic CLIPBOARD
+selection.
+.Pp
+.Nm xclipout
+gets data available as the
+.Ic STRING
+target in the
+.Ic CLIPBOARD
+selection, and write it to the standard output.
+.Pp
+.Nm xclipowner
+writes to the standard output a line containing the ID of the current owner of the
+.Ic CLIPBOARD
+selection.
+.Pp
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl p
+Use the
+.Ic PRIMARY
+selection, rather than the default
+.Ic CLIPBOARD
+selection.
+.It Fl t Ar target
+Use the given
+.Ar target ,
+rather than the default
+.Ic STRING
+target.
+.It Fl w
+Wait/watch mode.  For
+.Nm xclipin ,
+wait until losing the selection, rather than forking into background.
+For
+.Nm xclipowner ,
+run indefinitely, watching for each transition of the selection's ownership.
+.El
 .Sh ENVIRONMENT
-The following environment variables affect the execution of
-.Nm Ns .
+The following environment variables affect the execution of these utilities.
 .Bl -tag -width Ds
 .It Ev DISPLAY
-The display to start
-.Nm
-on.
+The display to use.
+.Sh SEE ALSO
+.Xr X 1

@@ -1,28 +1,56 @@
 XCLIPD(1)                   General Commands Manual                  XCLIPD(1)
 
 NAME
-     xclipd – clipboard manager daemon
+     xclipd, xclipin, xclipout, xclipowner – clipboard management utilities
 
 SYNOPSIS
      xclipd
+     xclipin [-pw] [-t target] [file]
+     xclipout [-p] [-t target]
+     xclipowner [-pw]
 
 DESCRIPTION
      xclipd maintains the contents of the CLIPBOARD selection, making it
-     possible to copy the contents of a window into the clipboard and to close
-     that window without losing the copied content.
+     possible to close a window without losing the copied data.
 
      xclipd also keeps the PRIMARY selection synchronized with the CLIPBOARD
-     selection.  Whenever something is copied into the CLIPBOARD selection,
-     that content can also be requested from the PRIMARY selection as well,
-     but not the other way around.
+     selection.  It makes possible that, whenever something is copied into the
+     CLIPBOARD selection, the copied data can also be requested from the
+     PRIMARY selection as well (but not the other way around).
 
      xclipd does not daemonize itself; therefore, it should be run in the
      background.
 
+     xclipin reads data from the given file or standard input and makes it
+     available as the STRING target in the CLIPBOARD selection.
+
+     xclipout gets data available as the STRING target in the CLIPBOARD
+     selection, and write it to the standard output.
+
+     xclipowner writes to the standard output a line containing the ID of the
+     current owner of the CLIPBOARD selection.
+
+     The options are as follows:
+
+     -p      Use the PRIMARY selection, rather than the default CLIPBOARD
+             selection.
+
+     -t target
+             Use the given target, rather than the default STRING target.
+
+     -w      Wait/watch mode.  For xclipin, wait until losing the selection,
+             rather than forking into background.  For xclipowner, run
+             indefinitely, watching for each transition of the selection's
+             ownership.
+
 ENVIRONMENT
-     The following environment variables affect the execution of xclipd.
+     The following environment variables affect the execution of these
+     utilities.
 
      DISPLAY
-             The display to start xclipd on.
+             The display to use.
+
+SEE ALSO
+     X(1)
 
 OpenBSD 7.2                    January 18, 2023                    OpenBSD 7.2

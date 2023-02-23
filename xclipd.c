@@ -5,6 +5,7 @@
 #include <X11/Xatom.h>
 #include <X11/extensions/Xfixes.h>
 
+#include "util.h"
 #include "ctrlsel.h"
 
 #define NSTEPS  3
@@ -48,7 +49,6 @@ struct Manager {
 static Display *display = NULL;
 static Atom atoms[ATOM_LAST] = { 0 };
 static int xfixes = 0;
-static int (*xerrorxlib)(Display *, XErrorEvent *) = NULL;
 static char *atomnames[ATOM_LAST] = {
 	[ATOM_PAIR]             = "ATOM_PAIR",
 	[CLIPBOARD]             = "CLIPBOARD",
@@ -66,30 +66,6 @@ static char *atomnames[ATOM_LAST] = {
 	[UTF8_STRING]           = "UTF8_STRING",
 	[_TIMESTAMP_PROP]       = "_TIMESTAMP_PROP",
 };
-
-static int
-xerror(Display *display, XErrorEvent *e)
-{
-	if (e->error_code == BadWindow)
-		return 0;
-	return xerrorxlib(display, e);
-	exit(EXIT_FAILURE);             /* unreachable */
-}
-
-static Window
-createwindow(Display *display)
-{
-	return XCreateWindow(
-		display,
-		DefaultRootWindow(display),
-		0, 0, 1, 1, 0,
-		CopyFromParent, CopyFromParent, CopyFromParent,
-		CWEventMask,
-		&(XSetWindowAttributes){
-			.event_mask = StructureNotifyMask | PropertyChangeMask,
-		}
-	);
-}
 
 static void
 freetargets(struct Manager *manager)
@@ -287,8 +263,9 @@ ownclipboard(struct Manager *manager)
 	XEvent xev;
 	struct CtrlSelContext clipboard, primary;
 	enum Event retval = EV_OK;
+	int success;
 
-	ctrlsel_setowner(
+	success = ctrlsel_setowner(
 		display,
 		manager->window,
 		atoms[CLIPBOARD],
@@ -298,7 +275,9 @@ ownclipboard(struct Manager *manager)
 		manager->ntargets,
 		&clipboard
 	);
-	ctrlsel_setowner(
+	if (!success)
+		return EV_ERROR;
+	success = ctrlsel_setowner(
 		display,
 		manager->window,
 		atoms[PRIMARY],
@@ -311,11 +290,13 @@ ownclipboard(struct Manager *manager)
 	for (;;) {
 		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
+		if (success)
+			(void)ctrlsel_send(&primary, &xev);
 		(void)ctrlsel_send(&clipboard, &xev);
-		(void)ctrlsel_send(&primary, &xev);
 	}
+	if (success)
+		ctrlsel_disown(&primary);
 	ctrlsel_disown(&clipboard);
-	ctrlsel_disown(&primary);
 	return retval;
 }
 
@@ -324,20 +305,14 @@ init(struct Manager *manager)
 {
 	int i;
 
-	if ((display = XOpenDisplay(NULL)) == NULL) {
-		warnx("could not connect to X server");
+	if (!xinit(&display, &manager->window))
 		goto error;
-	}
 	if (!XFixesQueryExtension(display, &xfixes, &i)) {
 		warnx("could not use XFixes");
 		goto error;
 	}
 	if (!XInternAtoms(display, atomnames, ATOM_LAST, False, atoms)) {
 		warnx("could not intern atoms");
-		goto error;
-	}
-	if ((manager->window = createwindow(display)) == None) {
-		warnx("could not create manager window");
 		goto error;
 	}
 	if (XGetSelectionOwner(display, atoms[CLIPBOARD_MANAGER]) != None) {
@@ -355,7 +330,6 @@ init(struct Manager *manager)
 		atoms[CLIPBOARD],
 		XFixesSetSelectionOwnerNotifyMask
 	);
-	xerrorxlib = XSetErrorHandler(xerror);
 	return 1;
 error:
 	return 0;
@@ -415,9 +389,6 @@ main(void)
 	}
 	ctrlsel_disown(manager.context);
 done:
-	if (manager.window != None)
-		(void)XDestroyWindow(display, manager.window);
-	if (display != NULL)
-		(void)XCloseDisplay(display);
+	xclose (display, manager.window);
 	return EXIT_FAILURE;
 }

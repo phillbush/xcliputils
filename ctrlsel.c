@@ -423,6 +423,8 @@ ctrlsel_request(
 	Atom *pairs;
 	unsigned long i, size;
 
+	if (time == CurrentTime)
+		time = getservertime(display, window);
 	*context = (struct CtrlSelContext){
 		.display = display,
 		.window = window,
