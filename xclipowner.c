@@ -62,6 +62,10 @@ main(int argc, char *argv[])
 	int retval = EXIT_FAILURE;
 	int xfixes, ch, i;
 
+#if __OpenBSD__
+	if (pledge("unix stdio rpath", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	func = &printowner;
 	while ((ch = getopt(argc, argv, "pw")) != -1) {
 		switch (ch) {
@@ -78,6 +82,10 @@ main(int argc, char *argv[])
 	}
 	if (!xinit(&display, &window))
 		goto error;
+#if __OpenBSD__
+	if (pledge("stdio", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	if (!XFixesQueryExtension(display, &xfixes, &i)) {
 		warnx("could not use XFixes");
 		goto error;

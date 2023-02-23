@@ -1,5 +1,6 @@
 #include <err.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -307,6 +308,10 @@ init(struct Manager *manager)
 
 	if (!xinit(&display, &manager->window))
 		goto error;
+#if __OpenBSD__
+	if (pledge("stdio", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	if (!XFixesQueryExtension(display, &xfixes, &i)) {
 		warnx("could not use XFixes");
 		goto error;
@@ -367,6 +372,10 @@ main(void)
 	enum Event ev;
 	int i;
 
+#if __OpenBSD__
+	if (pledge("unix stdio rpath", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	manager = (struct Manager){
 		.time = CurrentTime,
 		.window = None,

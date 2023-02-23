@@ -8,12 +8,15 @@
 static int
 xerror(Display *display, XErrorEvent *e)
 {
-	char buf[BUFSIZ];
+	char msg[128], number[128], req[128];
 
 	if (e->error_code == BadWindow)
 		return 0;
-	XGetErrorText(display, e->error_code, buf, BUFSIZ);
-	errx(EXIT_FAILURE, "%lu: %s", e->resourceid, buf);
+	XGetErrorText(display, e->error_code, msg, sizeof(msg));
+	(void)snprintf(number, sizeof(number), "%d", e->request_code);
+	XGetErrorDatabaseText(display, "XRequest", number, "<unknown>", req, sizeof(req));
+	errx(EXIT_FAILURE, "%s (0x%08lX): %s", req, e->resourceid, msg);
+	return 0;               /* unreachable */
 }
 
 static Window
@@ -48,12 +51,19 @@ xfork(void)
 int
 xinit(Display **display, Window *window)
 {
+	char buf[1];
+
 	*display = NULL;
 	*window = None;
 	if ((*display = XOpenDisplay(NULL)) == NULL) {
 		warnx("could not connect to X server");
 		return 0;
 	}
+	/*
+	 * We force reading of XErrorDB into memory so we can
+	 * drop the "rpath" promise on pledge(2) on OpenBSD.
+	 */
+	(void)XGetErrorDatabaseText(*display, "XProtoError", "0", "", buf, 1);
 	(void)XSetErrorHandler(xerror);
 	if ((*window = createwindow(*display)) == None) {
 		warnx("could not create manager window");

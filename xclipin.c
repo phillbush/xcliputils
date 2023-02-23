@@ -59,6 +59,10 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 
 	if (!xinit(&display, &window))
 		goto error;
+#if __OpenBSD__
+	if (pledge((wflag ? "stdio" : "stdio proc"), NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	if (selection == None && (selection = XInternAtom(display, CLIPBOARD, False)) == None) {
 		warnx("could not intern atom");
 		goto error;
@@ -112,6 +116,10 @@ main(int argc, char *argv[])
 	char *targetstr = NULL;
 	unsigned char *data = NULL;
 
+#if __OpenBSD__
+	if (pledge("unix stdio rpath proc", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	while ((ch = getopt(argc, argv, "pt:w")) != -1) {
 		switch (ch) {
 		case 'p':

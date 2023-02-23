@@ -44,6 +44,10 @@ xclipout(Atom selection, char *targetstr)
 
 	if (!xinit(&display, &window))
 		goto error;
+#if __OpenBSD__
+	if (pledge("stdio", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	if (selection == None && (selection = XInternAtom(display, CLIPBOARD, False)) == None) {
 		warnx("could not intern atom");
 		goto error;
@@ -91,6 +95,10 @@ main(int argc, char *argv[])
 	int ch;
 	char *targetstr = NULL;
 
+#if __OpenBSD__
+	if (pledge("unix stdio rpath", NULL) == -1)
+		err(EXIT_FAILURE, "pledge");
+#endif
 	while ((ch = getopt(argc, argv, "pt:")) != -1) {
 		switch (ch) {
 		case 'p':

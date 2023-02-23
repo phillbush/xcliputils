@@ -13,18 +13,15 @@ X11LIB ?= /usr/X11R6/lib
 
 DEFS = -D_POSIX_C_SOURCE=200809L -DGNU_SOURCE -D_BSD_SOURCE
 INCS = -I${LOCALINC} -I${X11INC}
-LIBS = -L${LOCALLIB} -L${X11LIB} -lX11 -lXfixes
+LIBS = -L${LOCALLIB} -L${X11LIB} -lX11
 
 all: ${PROG}
 
-${PROG}: ${@:=.o} ctrlsel.o util.o
-	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} ${LDFLAGS}
+xclipd xclipowner: ${@:=.o} ctrlsel.o util.o
+	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} -lXfixes ${LDFLAGS}
 
-xclipd: xclipd.o
-xclipin: xclipin.o
-xclipout: xclipout.o
-xclipcopy: xclipcopy.o
-xclipowner: xclipowner.o
+xclipin xclipout: ${@:=.o} ctrlsel.o util.o
+	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} ${LDFLAGS}
 
 ${OBJS}: ctrlsel.h util.h
 
