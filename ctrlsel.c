@@ -53,10 +53,11 @@ getselmaxsize(Display *display)
 	return SELDEFSIZE;
 }
 
-static Time
-getservertime(Display *display, Window window)
+static int
+getservertime(Display *display, Time *time)
 {
 	XEvent xev;
+	Window window;
 	Atom timeprop;
 
 	/*
@@ -73,34 +74,46 @@ getservertime(Display *display, Window window)
 	 * selection, this time value can be obtained from the event
 	 * itself.
 	 *
-	 * In the case that the client must inconditionally acquire the
+	 * In the case that the client must unconditionally acquire the
 	 * ownership of a selection (which is our case), a zero-length
 	 * append to a property is a way to obtain a timestamp for this
 	 * purpose.  The timestamp is in the corresponding
 	 * `PropertyNotify` event.
-	 *
-	 * Note that, for this second method, the window used to get
-	 * the `PropertyNotify` event from the server (which, in our
-	 * case, is the window that will own the selection) must have
-	 * `PropertyChangeMask` in its event mask.  Otherwise, a hang
-	 * will result, for the window could not receive such event.
 	 */
 
-	timeprop = XInternAtom(display, _TIMESTAMP_PROP, False),
+	if (time != CurrentTime)
+		return 1;
+	timeprop = XInternAtom(display, _TIMESTAMP_PROP, False);
+	if (timeprop == None)
+		goto error;
+	window = XCreateWindow(
+		display,
+		DefaultRootWindow(display),
+		0, 0, 1, 1, 0,
+		CopyFromParent, CopyFromParent, CopyFromParent,
+		CWEventMask,
+		&(XSetWindowAttributes){
+			.event_mask = PropertyChangeMask,
+		}
+	);
+	if (window == None)
+		goto error;
 	XChangeProperty(
 		display, window,
 		timeprop, timeprop,
 		8L, PropModeAppend, NULL, 0
 	);
-	while (!XNextEvent(display, &xev)) {
+	while (!XWindowEvent(display, window, PropertyChangeMask, &xev)) {
 		if (xev.type == PropertyNotify &&
 		    xev.xproperty.window == window &&
 		    xev.xproperty.atom == timeprop) {
-			return xev.xproperty.time;
+			*time = xev.xproperty.time;
 		}
 	}
-	/* unreachable */
-	return CurrentTime;
+	(void)XDestroyWindow(display, window);
+	return 1;
+error:
+	return 0;
 }
 
 static int
@@ -423,8 +436,8 @@ ctrlsel_request(
 	Atom *pairs;
 	unsigned long i, size;
 
-	if (time == CurrentTime)
-		time = getservertime(display, window);
+	if (!getservertime(display, &time))
+		return 0;
 	*context = (struct CtrlSelContext){
 		.display = display,
 		.window = window,
@@ -500,8 +513,8 @@ ctrlsel_setowner(
 	Window root;
 
 	root = DefaultRootWindow(display);
-	if (time == CurrentTime)
-		time = getservertime(display, window);
+	if (!getservertime(display, &time))
+		return 0;
 	*context = (struct CtrlSelContext){
 		.display = display,
 		.window = window,
