@@ -108,6 +108,7 @@ getservertime(Display *display, Time *time)
 		    xev.xproperty.window == window &&
 		    xev.xproperty.atom == timeprop) {
 			*time = xev.xproperty.time;
+			break;
 		}
 	}
 	(void)XDestroyWindow(display, window);
