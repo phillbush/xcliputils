@@ -53,7 +53,7 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 	XEvent xev;
 	Display *display = NULL;
 	Window window = None;
-	Atom targetatom = XA_STRING;
+	Atom targetatom = None;
 	int retval = EXIT_FAILURE;
 	int success, status;
 
@@ -67,7 +67,7 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 		warnx("could not intern atom");
 		goto error;
 	}
-	if (targetstr != NULL && (targetatom = XInternAtom(display, targetstr, False)) == None) {
+	if ((targetatom = XInternAtom(display, targetstr, False)) == None) {
 		warnx("could not intern atom");
 		goto error;
 	}
@@ -113,7 +113,7 @@ main(int argc, char *argv[])
 	int retval = EXIT_FAILURE;
 	int ch;
 	size_t size;
-	char *targetstr = NULL;
+	char *targetstr = "UTF8_STRING";
 	unsigned char *data = NULL;
 
 #if __OpenBSD__

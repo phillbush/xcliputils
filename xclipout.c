@@ -19,14 +19,33 @@ usage(void)
 }
 
 static int
-datawrite(unsigned char *buf, size_t size)
+datawrite(Display *display, struct CtrlSelTarget *target)
 {
-	size_t off;
+	size_t i, off;
 	ssize_t nw;
+	char *str;
 
-	for (off = 0; off < size; off += nw)
-		if ((nw = write(STDOUT_FILENO, buf + off, size - off)) == 0 || nw == -1)
-			return -1;
+	if (target->type == XA_ATOM) {
+		for (i = 0; i < target->nitems; i++) {
+			str = XGetAtomName(display, ((Atom *)target->buffer)[i]);
+			printf("%s\n", str);
+			XFree(str);
+		}
+	} else if (target->type == XA_CARDINAL) {
+		for (i = 0; i < target->nitems; i++) {
+			printf("%lu\n", ((unsigned long *)target->buffer)[i]);
+		}
+	} else if (target->type == XA_WINDOW) {
+		for (i = 0; i < target->nitems; i++) {
+			printf("0x%08lX\n", ((Window *)target->buffer)[i]);
+		}
+	} else {
+		for (off = 0; off < target->bufsize; off += nw) {
+			if ((nw = write(STDOUT_FILENO, target->buffer + off, target->bufsize - off)) == 0 || nw == -1) {
+				return -1;
+			}
+		}
+	}
 	return 0;
 }
 
@@ -38,7 +57,7 @@ xclipout(Atom selection, char *targetstr)
 	XEvent xev;
 	Display *display = NULL;
 	Window window = None;
-	Atom targetatom = XA_STRING;
+	Atom targetatom = None;
 	int retval = EXIT_FAILURE;
 	int success, status;
 
@@ -52,7 +71,7 @@ xclipout(Atom selection, char *targetstr)
 		warnx("could not intern atom");
 		goto error;
 	}
-	if (targetstr != NULL && (targetatom = XInternAtom(display, targetstr, False)) == None) {
+	if ((targetatom = XInternAtom(display, targetstr, False)) == None) {
 		warnx("could not intern atom");
 		goto error;
 	}
@@ -78,7 +97,7 @@ xclipout(Atom selection, char *targetstr)
 	ctrlsel_cancel(&context);
 	if (status == CTRLSEL_ERROR)
 		goto done;
-	if (datawrite(target.buffer, target.bufsize) == -1)
+	if (datawrite(display, &target) == -1)
 		goto done;
 	retval = EXIT_SUCCESS;
 done:
@@ -93,7 +112,7 @@ main(int argc, char *argv[])
 {
 	Atom selection = None;
 	int ch;
-	char *targetstr = NULL;
+	char *targetstr = "UTF8_STRING";
 
 #if __OpenBSD__
 	if (pledge("unix stdio rpath", NULL) == -1)
