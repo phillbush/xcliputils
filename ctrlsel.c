@@ -696,12 +696,16 @@ ctrlsel_receive(struct CtrlSelContext *context, XEvent *xev)
 		return CTRLSEL_NONE;
 	if (status == CTRLSEL_INTERNAL) {
 		if (context->ndone >= context->ntargets) {
-			return CTRLSEL_RECEIVED;
+			status = CTRLSEL_RECEIVED;
+			goto done;
 		}
 	} else if (status == CTRLSEL_ERROR) {
 		freebuffers(context);
 		freetransferences(context);
 	}
+done:
+	if (status == CTRLSEL_RECEIVED)
+		freetransferences(context);
 	return status;
 }
 
@@ -886,8 +890,7 @@ ctrlsel_send(struct CtrlSelContext *context, XEvent *xev)
 void
 ctrlsel_cancel(struct CtrlSelContext *context)
 {
-	if (context->ndone < context->ntargets)
-		freebuffers(context);
+	freebuffers(context);
 	freetransferences(context);
 }
 

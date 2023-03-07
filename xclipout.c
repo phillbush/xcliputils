@@ -94,9 +94,8 @@ xclipout(Atom selection, char *targetstr)
 			break;
 		}
 	}
-	ctrlsel_cancel(&context);
 	if (status == CTRLSEL_ERROR)
-		goto done;
+		goto error;
 	if (datawrite(display, &target) == -1)
 		goto done;
 	retval = EXIT_SUCCESS;

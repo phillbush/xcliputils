@@ -186,7 +186,6 @@ gettargets(struct Manager *manager)
 		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
 			break;
 	}
-	ctrlsel_cancel(&context);
 	if (retval != EV_OK)
 		goto error;
 	if (meta.buffer == NULL || meta.nitems == 0)
@@ -254,7 +253,6 @@ savetargets(struct Manager *manager)
 		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
 			break;
 	}
-	ctrlsel_cancel(&context);
 	return retval;
 }
 
