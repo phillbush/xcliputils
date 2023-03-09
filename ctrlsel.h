@@ -1,14 +1,29 @@
+#ifndef _CTRLSEL_H_
+#define _CTRLSEL_H_
+
 enum {
 	CTRLSEL_NONE,
 	CTRLSEL_INTERNAL,
 	CTRLSEL_RECEIVED,
+	CTRLSEL_SENT,
+	CTRLSEL_DROPSELF,
+	CTRLSEL_DROPOTHER,
 	CTRLSEL_ERROR,
 	CTRLSEL_LOST
+};
+
+enum {
+	CTRLSEL_COPY    = 0x01,
+	CTRLSEL_MOVE    = 0x02,
+	CTRLSEL_LINK    = 0x04,
+	CTRLSEL_ASK     = 0x08,
+	CTRLSEL_PRIVATE = 0x10,
 };
 
 struct CtrlSelTarget {
 	Atom target;
 	Atom type;
+	Atom action;
 	int format;
 	unsigned long nitems;
 	unsigned long bufsize;
@@ -30,6 +45,12 @@ struct CtrlSelContext {
 	unsigned long selmaxsize;
 	unsigned long ndone;
 	void *transfers;
+
+	/*
+	 * Items below are used internally for drag-and-dropping.
+	 */
+	Window dndwindow;
+	unsigned int dndactions, dndresult;
 };
 
 /*
@@ -238,3 +259,34 @@ void ctrlsel_cancel(struct CtrlSelContext *context);
  *              filled by ctrlsel_setowner.
  */
 void ctrlsel_disown(struct CtrlSelContext *context);
+
+int
+ctrlsel_dndwatch(
+	Display *display,
+	Window window,
+	unsigned int actions,
+	struct CtrlSelTarget targets[],
+	unsigned long ntargets,
+	struct CtrlSelContext *context
+);
+
+int ctrlsel_dndreceive(struct CtrlSelContext *context, XEvent *event);
+
+void ctrlsel_dndclose(struct CtrlSelContext *context);
+
+int
+ctrlsel_dndown(
+	Display *display,
+	Window window,
+	Window miniature,
+	Time time,
+	struct CtrlSelTarget targets[],
+	unsigned long ntargets,
+	struct CtrlSelContext *context
+);
+
+int ctrlsel_dndsend(struct CtrlSelContext *context, XEvent *event);
+
+void ctrlsel_dnddisown(struct CtrlSelContext *context);
+
+#endif /* _CTRLSEL_H_ */
