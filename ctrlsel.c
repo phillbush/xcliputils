@@ -1311,13 +1311,13 @@ ctrlsel_dndreceive(struct CtrlSelContext *context, XEvent *event)
 		d[2] = 0;               /* our rectangle is the entire screen */
 		d[3] = 0xFFFFFFFF;      /* so we do not get lots of messages */
 		d[4] = action;
-		if (action == XDND_ACTION_PRIVATE)
+		if (action == atoms[XDND_ACTION_PRIVATE])
 			context->dndresult = CTRLSEL_PRIVATE;
-		else if (action == XDND_ACTION_ASK)
+		else if (action == atoms[XDND_ACTION_ASK])
 			context->dndresult = CTRLSEL_ASK;
-		else if (action == XDND_ACTION_LINK)
+		else if (action == atoms[XDND_ACTION_LINK])
 			context->dndresult = CTRLSEL_LINK;
-		else if (action == XDND_ACTION_MOVE)
+		else if (action == atoms[XDND_ACTION_MOVE])
 			context->dndresult = CTRLSEL_MOVE;
 		else
 			context->dndresult = CTRLSEL_COPY;
