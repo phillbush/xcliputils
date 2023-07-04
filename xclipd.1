@@ -79,7 +79,9 @@ Wait/watch mode.  For
 wait until losing the selection, rather than forking into background.
 For
 .Nm xclipowner ,
-run indefinitely, watching for each transition of the selection's ownership.
+run indefinitely, watching for each transition of the selection's ownership,
+ignoring when the owner is a clipboard manager such as
+.Nm xclipd .
 .El
 .Sh ENVIRONMENT
 The following environment variables affect the execution of these utilities.

@@ -8,58 +8,82 @@
 #include <X11/extensions/Xfixes.h>
 
 #include "util.h"
-#include "ctrlsel.h"
-
-#define FORMAT          "0x%08lX\n"
-#define CLIPBOARD       "CLIPBOARD"
 
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: xclipowner [-pw]\n");
+	(void)fprintf(stderr, "usage: xclipowner [-pw]\n");
 	exit(EXIT_FAILURE);
 }
 
 void
-printowner(Display *display, Window window, int xfixes, Atom selection)
+printwinid(Window win)
 {
-	Atom owner;
-
-	(void)xfixes;
-	(void)window;
-	owner = XGetSelectionOwner(display, selection);
-	printf(FORMAT, owner);
+	(void)printf("0x%08lX\n", win);
+	fflush(stdout);
 }
 
-void
+int
+printowner(Display *display, Window window, int xfixes, Atom selection)
+{
+	(void)xfixes;
+	(void)window;
+	printwinid(XGetSelectionOwner(display, selection));
+	return 1;
+}
+
+int
 watchowner(Display *display, Window window, int xfixes, Atom selection)
 {
 	XEvent xev;
 	XFixesSelectionNotifyEvent *xselev;
+	Atom manageratom;
+	Window manager;
 
-	printowner(display, window, xfixes, selection);
-	for (;;) {
-		(void)XNextEvent(display, &xev);
-		xselev = ((XFixesSelectionNotifyEvent *)&xev);
-		if (xev.type == DestroyNotify &&
-		    xev.xdestroywindow.window == window)
-			return;
-		if (xev.type == xfixes + XFixesSelectionNotify &&
-		    xselev->selection == selection) {
-			printf(FORMAT, xselev->owner);
-			fflush(stdout);
-		}
+	manageratom = XInternAtom(display, "CLIPBOARD_MANAGER", False);
+	if (manageratom == None) {
+		warnx("could not intern atom");
+		return 0;
 	}
+	XFixesSelectSelectionInput(
+		display,
+		window,
+		manageratom,
+		XFixesSetSelectionOwnerNotifyMask
+	);
+	manager = XGetSelectionOwner(display, manageratom);
+	printowner(display, window, xfixes, selection);
+	while (!XNextEvent(display, &xev)) switch (xev.type) {
+	case DestroyNotify:
+		if (xev.xdestroywindow.window != window)
+			break;
+		return 1;
+	default:
+		if (xev.type != xfixes + XFixesSelectionNotify)
+			break;
+		xselev = (XFixesSelectionNotifyEvent *)&xev;
+		if (xselev->selection == manageratom) {
+			manager = xselev->owner;
+			break;
+		}
+		if (xselev->selection != selection)
+			break;
+		if (xselev->owner != manager)
+			printwinid(xselev->owner);
+		break;
+	}
+	/* unreachable */
+	return 0;
 }
 
 int
 main(int argc, char *argv[])
 {
-	void (*func)(Display *display, Window window, int xfixes, Atom selection);
+	int (*func)(Display *, Window, int, Atom);
 	Display *display = NULL;
 	Window window = None;
 	Atom selection = None;
-	int retval = EXIT_FAILURE;
+	int exitval = EXIT_FAILURE;
 	int xfixes, ch, i;
 
 #if __OpenBSD__
@@ -90,7 +114,9 @@ main(int argc, char *argv[])
 		warnx("could not use XFixes");
 		goto error;
 	}
-	if (selection == None && (selection = XInternAtom(display, CLIPBOARD, False)) == None) {
+	if (selection == None)
+		selection = XInternAtom(display, "CLIPBOARD", False);
+	if (selection == None) {
 		warnx("could not intern atom");
 		goto error;
 	}
@@ -100,9 +126,10 @@ main(int argc, char *argv[])
 		selection,
 		XFixesSetSelectionOwnerNotifyMask
 	);
-	(*func)(display, window, xfixes, selection);
-	retval = EXIT_SUCCESS;
+	if (!(*func)(display, window, xfixes, selection))
+		goto error;
+	exitval = EXIT_SUCCESS;
 error:
 	xclose(display, window);
-	return retval;
+	return exitval;
 }
