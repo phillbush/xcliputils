@@ -44,7 +44,7 @@ struct Manager {
 	int dowait;                     /* whether to wait for next owner */
 	unsigned long ntargets;         /* number of targets the last owner supported */
 	struct CtrlSelTarget *targets;  /* the targets last owner supported */
-	struct CtrlSelContext *context; /* selection context for CLIPBOARD_MANAGER */
+	CtrlSelContext *context;        /* selection context for CLIPBOARD_MANAGER */
 };
 
 static Display *display = NULL;
@@ -162,28 +162,26 @@ static enum Event
 gettargets(struct Manager *manager)
 {
 	XEvent xev;
-	struct CtrlSelContext context;
+	CtrlSelContext *context;
 	struct CtrlSelTarget meta;
 	unsigned long i;
 	Atom target;
-	int success;
 	enum Event retval = EV_OK;
 
 	ctrlsel_filltarget(atoms[TARGETS], XA_ATOM, 32, NULL, 0, &meta);
-	success = ctrlsel_request(
+	context = ctrlsel_request(
 		display,
 		manager->window,
 		atoms[CLIPBOARD],
 		manager->time,
-		&meta, 1,
-		&context
+		&meta, 1
 	);
-	if (!success)
+	if (context == NULL)
 		return EV_ERROR;
 	for (;;) {
 		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
+		if ((retval = translate(ctrlsel_receive(context, &xev))) != EV_INTERNAL)
 			break;
 	}
 	if (retval != EV_OK)
@@ -232,25 +230,23 @@ static enum Event
 savetargets(struct Manager *manager)
 {
 	XEvent xev;
-	struct CtrlSelContext context;
-	int success;
+	CtrlSelContext *context;
 	enum Event retval = EV_OK;
 
-	success = ctrlsel_request(
+	context = ctrlsel_request(
 		display,
 		manager->window,
 		atoms[CLIPBOARD],
 		manager->time,
 		manager->targets,
-		manager->ntargets,
-		&context
+		manager->ntargets
 	);
-	if (!success)
+	if (context == NULL)
 		return EV_ERROR;
 	for (;;) {
 		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		if ((retval = translate(ctrlsel_receive(&context, &xev))) != EV_INTERNAL)
+		if ((retval = translate(ctrlsel_receive(context, &xev))) != EV_INTERNAL)
 			break;
 	}
 	return retval;
@@ -260,42 +256,39 @@ static enum Event
 ownclipboard(struct Manager *manager)
 {
 	XEvent xev;
-	struct CtrlSelContext clipboard, primary;
+	CtrlSelContext *clipboard, *primary;
 	enum Event retval = EV_OK;
-	int success;
 
-	success = ctrlsel_setowner(
+	clipboard = ctrlsel_setowner(
 		display,
 		manager->window,
 		atoms[CLIPBOARD],
 		manager->time,
 		0,
 		manager->targets,
-		manager->ntargets,
-		&clipboard
+		manager->ntargets
 	);
-	if (!success)
+	if (clipboard == NULL)
 		return EV_ERROR;
-	success = ctrlsel_setowner(
+	primary = ctrlsel_setowner(
 		display,
 		manager->window,
 		atoms[PRIMARY],
 		manager->time,
 		0,
 		manager->targets,
-		manager->ntargets,
-		&primary
+		manager->ntargets
 	);
 	for (;;) {
 		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
 			break;
-		if (success)
-			(void)ctrlsel_send(&primary, &xev);
-		(void)ctrlsel_send(&clipboard, &xev);
+		if (primary != NULL)
+			(void)ctrlsel_send(primary, &xev);
+		(void)ctrlsel_send(clipboard, &xev);
 	}
-	if (success)
-		ctrlsel_disown(&primary);
-	ctrlsel_disown(&clipboard);
+	if (primary != NULL)
+		ctrlsel_disown(primary);
+	ctrlsel_disown(clipboard);
 	return retval;
 }
 
@@ -322,8 +315,15 @@ init(struct Manager *manager)
 		warnx("there's already a clipboard manager running");
 		goto error;
 	}
-	if (!ctrlsel_setowner(display, manager->window, atoms[CLIPBOARD_MANAGER],
-	                        CurrentTime, 1, NULL, 0, manager->context)) {
+	manager->context = ctrlsel_setowner(
+		display,
+		manager->window,
+		atoms[CLIPBOARD_MANAGER],
+		CurrentTime,
+		1,
+		NULL, 0
+	);
+	if (manager->context == NULL) {
 		warnx("could not own manager selection");
 		goto error;
 	}
@@ -365,7 +365,6 @@ main(void)
 		 * We'll loop through all those steps in the main loop.
 		 */
 	};
-	struct CtrlSelContext contex;
 	struct Manager manager;
 	enum Event ev;
 	int i;
@@ -380,7 +379,7 @@ main(void)
 		.dowait = 0,
 		.ntargets = 0,
 		.targets = NULL,
-		.context = &contex,
+		.context = NULL,
 	};
 	if (!init(&manager))
 		goto done;

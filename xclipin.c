@@ -48,14 +48,14 @@ fillbuffer(int fd, void *buf, size_t *size)
 static int
 xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int wflag)
 {
-	struct CtrlSelContext context;
+	CtrlSelContext *context;
 	struct CtrlSelTarget target;
 	XEvent xev;
 	Display *display = NULL;
 	Window window = None;
 	Atom targetatom = None;
 	int retval = EXIT_FAILURE;
-	int success, status;
+	int status;
 
 	if (!xinit(&display, &window))
 		goto error;
@@ -75,26 +75,24 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 		if (xfork() == -1 || xfork() == -1)     /* double fork */
 			goto error;
 	ctrlsel_filltarget(targetatom, targetatom, 8, data, size, &target);
-	success = ctrlsel_setowner(
+	context = ctrlsel_setowner(
 		display,
 		window,
 		selection,
 		CurrentTime,
 		0,
-		&target,
-		1,
-		&context
+		&target, 1
 	);
-	if (!success)
+	if (context == NULL)
 		goto error;
 	for (;;) {
 		(void)XNextEvent(display, &xev);
-		status = ctrlsel_send(&context, &xev);
+		status = ctrlsel_send(context, &xev);
 		if (status == CTRLSEL_LOST || status == CTRLSEL_ERROR) {
 			break;
 		}
 	}
-	ctrlsel_disown(&context);
+	ctrlsel_disown(context);
 	if (status != CTRLSEL_ERROR)
 		retval = EXIT_SUCCESS;
 error:

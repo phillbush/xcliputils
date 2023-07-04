@@ -52,14 +52,14 @@ datawrite(Display *display, struct CtrlSelTarget *target)
 static int
 xclipout(Atom selection, char *targetstr)
 {
-	struct CtrlSelContext context;
+	CtrlSelContext *context;
 	struct CtrlSelTarget target;
 	XEvent xev;
 	Display *display = NULL;
 	Window window = None;
 	Atom targetatom = None;
 	int retval = EXIT_FAILURE;
-	int success, status;
+	int status;
 
 	if (!xinit(&display, &window))
 		goto error;
@@ -76,30 +76,27 @@ xclipout(Atom selection, char *targetstr)
 		goto error;
 	}
 	ctrlsel_filltarget(targetatom, targetatom, 8, NULL, 0, &target);
-	success = ctrlsel_request(
+	context = ctrlsel_request(
 		display,
 		window,
 		selection,
 		CurrentTime,
-		&target,
-		1,
-		&context
+		&target, 1
 	);
-	if (!success)
+	if (context == NULL)
 		goto error;
 	for (;;) {
 		(void)XNextEvent(display, &xev);
-		status = ctrlsel_receive(&context, &xev);
+		status = ctrlsel_receive(context, &xev);
 		if (status == CTRLSEL_RECEIVED || status == CTRLSEL_ERROR) {
 			break;
 		}
 	}
 	if (status == CTRLSEL_ERROR)
 		goto error;
-	if (datawrite(display, &target) == -1)
-		goto done;
-	retval = EXIT_SUCCESS;
-done:
+	if (datawrite(display, &target) != -1)
+		retval = EXIT_SUCCESS;
+	ctrlsel_cancel(context);
 	free(target.buffer);
 error:
 	xclose(display, window);
@@ -130,9 +127,7 @@ main(int argc, char *argv[])
 			break;
 		}
 	}
-	argc -= optind;
-	argv += optind;
-	if (argc != 0)
+	if (argc != optind)
 		usage();
 	return xclipout(selection, targetstr);
 }

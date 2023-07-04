@@ -1,8 +1,7 @@
 PROG = xclipd xclipin xclipout xclipowner
 OBJS = ${PROG:=.o} ctrlsel.o util.o
-HEAD = ctrlsel.h util.h
-SRCS = ${OBJS:.o=.c} ${HEAD}
-MANS = xclipd.1
+SRCS = ${OBJS:.o=.c}
+MAN  = xclipd.1
 
 PREFIX ?= /usr/local
 MANPREFIX ?= ${PREFIX}/share/man
@@ -15,6 +14,9 @@ DEFS = -D_POSIX_C_SOURCE=200809L -DGNU_SOURCE -D_BSD_SOURCE
 INCS = -I${LOCALINC} -I${X11INC}
 LIBS = -L${LOCALLIB} -L${X11LIB} -lXcursor -lX11
 
+bindir = ${DESTDIR}${PREFIX}/bin
+mandir = ${DESTDIR}${MANPREFIX}/man1
+
 all: ${PROG}
 
 xclipd xclipowner: ${@:=.o} ctrlsel.o util.o
@@ -23,28 +25,32 @@ xclipd xclipowner: ${@:=.o} ctrlsel.o util.o
 xclipin xclipout: ${@:=.o} ctrlsel.o util.o
 	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} ${LDFLAGS}
 
+.c.o:
+	${CC} -std=c99 -pedantic ${DEFS} ${INCS} ${CFLAGS} ${CPPFLAGS} -o $@ -c $<
+
 ${OBJS}: ctrlsel.h util.h
 
-.c.o:
-	${CC} -std=c99 -pedantic ${DEFS} ${INCS} ${CFLAGS} ${CPPFLAGS} -c $<
-
-README: ${MANS}
-	man -l ${MANS} | sed 's/.//g' >README
+README: ${MAN}
+	mandoc -I os=UNIX -T ascii ${MAN} | col -b | expand -t 8 >README
 
 tags: ${SRCS}
 	ctags ${SRCS}
+
+lint: ${SRCS}
+	-mandoc -T lint -W warning ${MAN}
+	-clang-tidy ${SRCS} -- -std=c99 ${DEFS} ${INCS} ${CPPFLAGS}
 
 clean:
 	rm -f ${OBJS} ${PROG} ${PROG:=.core} tags
 
 install: all
-	install -d ${DESTDIR}${PREFIX}/bin
-	install -d ${DESTDIR}${MANPREFIX}/man1
-	for i in ${PROG} ; do install -m 755 "$$i" "${DESTDIR}${PREFIX}/bin/$$i" ; done
-	install -m 644 ${MANS} ${DESTDIR}${MANPREFIX}/man1/${MANS}
+	mkdir -p ${bindir}
+	mkdir -p ${mandir}
+	for i in ${PROG} ; do install -m 755 "$$i" "${bindir}/$$i" ; done
+	install -m 644 ${MAN} ${mandir}/${MAN}
 
 uninstall:
-	for i in ${PROG} ; do rm "${DESTDIR}${PREFIX}/bin/$$i" ; done
-	rm ${DESTDIR}${MANPREFIX}/man1/${MANS}
+	-for i in ${PROG} ; do rm "${bindir}/$$i" ; done
+	-rm ${mandir}/${MAN}
 
 .PHONY: all tags clean install uninstall
