@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <X11/Xlib.h>
@@ -14,12 +15,12 @@
 #include "util.h"
 #include "ctrlsel.h"
 
-#define CLIPBOARD       "CLIPBOARD"
+#define SPACE   " \f\n\r\t\v"
 
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: xclipin [-pw] [-t target] [file]\n");
+	fprintf(stderr, "usage: xclipin [-psw] [-t target] [file]\n");
 	exit(EXIT_FAILURE);
 }
 
@@ -46,7 +47,7 @@ fillbuffer(int fd, void *buf, size_t *size)
 }
 
 static int
-xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int wflag)
+xclipin(Atom selection, char *targetstr, char *data, size_t size, int wflag)
 {
 	CtrlSelContext *context;
 	struct CtrlSelTarget target;
@@ -63,7 +64,9 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 	if (pledge((wflag ? "stdio" : "stdio proc"), NULL) == -1)
 		err(EXIT_FAILURE, "pledge");
 #endif
-	if (selection == None && (selection = XInternAtom(display, CLIPBOARD, False)) == None) {
+	if (selection == None)
+		selection = XInternAtom(display, "CLIPBOARD", False);
+	if (selection == None) {
 		warnx("could not intern atom");
 		goto error;
 	}
@@ -74,7 +77,14 @@ xclipin(Atom selection, char *targetstr, unsigned char *data, size_t size, int w
 	if (!wflag)
 		if (xfork() == -1 || xfork() == -1)     /* double fork */
 			goto error;
-	ctrlsel_filltarget(targetatom, targetatom, 8, data, size, &target);
+	ctrlsel_filltarget(
+		targetatom,
+		targetatom,
+		8,
+		(unsigned char *)data,
+		size,
+		&target
+	);
 	context = ctrlsel_setowner(
 		display,
 		window,
@@ -100,6 +110,14 @@ error:
 	return retval;
 }
 
+static size_t
+strnrspn(char *buf, char *charset, size_t len)
+{
+	while (len > 0 && strchr(charset, buf[len - 1]) != NULL)
+		len--;
+	return len;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -107,21 +125,26 @@ main(int argc, char *argv[])
 	Atom selection = None;
 	int fd = STDIN_FILENO;
 	int wflag = 0;
+	int ignorespace = 1;
 	int mapped = 1;
 	int retval = EXIT_FAILURE;
 	int ch;
-	size_t size;
+	size_t size, span;
 	char *targetstr = "UTF8_STRING";
-	unsigned char *data = NULL;
+	char *data = NULL;
+	char *buf = NULL;
 
 #if __OpenBSD__
 	if (pledge("unix stdio rpath proc", NULL) == -1)
 		err(EXIT_FAILURE, "pledge");
 #endif
-	while ((ch = getopt(argc, argv, "pt:w")) != -1) {
+	while ((ch = getopt(argc, argv, "pst:w")) != -1) {
 		switch (ch) {
 		case 'p':
 			selection = XA_PRIMARY;
+			break;
+		case 's':
+			ignorespace = 0;
 			break;
 		case 't':
 			targetstr = optarg;
@@ -143,8 +166,9 @@ main(int argc, char *argv[])
 		err(EXIT_FAILURE, "%s", argv[0]);
 	if (fstat(fd, &sb) == -1)
 		err(EXIT_FAILURE, "fstat");
-	size = sb.st_size;
-	if ((data = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+	data = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (data == MAP_FAILED) {
+		size = BUFSIZ;
 		mapped = 0;
 		if ((data = malloc(size)) == NULL) {
 			warn("malloc");
@@ -153,8 +177,16 @@ main(int argc, char *argv[])
 		if (fillbuffer(fd, data, &size) == -1) {
 			goto error;
 		}
+	} else {
+		size = sb.st_size;
 	}
-	retval = xclipin(selection, targetstr, data, size, wflag);
+	buf = data;
+	if (ignorespace) {
+		span = strspn(buf, SPACE);
+		buf += span;
+		size = strnrspn(buf, SPACE, size - span);
+	}
+	retval = xclipin(selection, targetstr, buf, size, wflag);
 error:
 	if (mapped)
 		munmap(data, sb.st_size);

@@ -1,11 +1,11 @@
 XCLIPD(1)                   General Commands Manual                  XCLIPD(1)
 
 NAME
-     xclipd, xclipin, xclipout, xclipowner – clipboard management utilities
+     xclipd, xclipin, xclipout, xclipowner - clipboard management utilities
 
 SYNOPSIS
      xclipd
-     xclipin [-pw] [-t target] [file]
+     xclipin [-psw] [-t target] [file]
      xclipout [-p] [-t target]
      xclipowner [-pw]
 
@@ -22,7 +22,8 @@ DESCRIPTION
      background.
 
      xclipin reads data from the given file or standard input and makes it
-     available as the STRING target in the CLIPBOARD selection.
+     available as the STRING target in the CLIPBOARD selection.  All leading
+     and trailing space around the read content is ignored.
 
      xclipout gets data available as the STRING target in the CLIPBOARD
      selection, and write it to the standard output.
@@ -35,13 +36,16 @@ DESCRIPTION
      -p      Use the PRIMARY selection, rather than the default CLIPBOARD
              selection.
 
+     -s      Do not ignore space characters around content read by xclipin.
+
      -t target
              Use the given target, rather than the default STRING target.
 
      -w      Wait/watch mode.  For xclipin, wait until losing the selection,
              rather than forking into background.  For xclipowner, run
              indefinitely, watching for each transition of the selection's
-             ownership.
+             ownership, ignoring when the owner is a clipboard manager such as
+             xclipd.
 
 ENVIRONMENT
      The following environment variables affect the execution of these
@@ -53,4 +57,4 @@ ENVIRONMENT
 SEE ALSO
      X(1)
 
-OpenBSD 7.2                    January 18, 2023                    OpenBSD 7.2
+UNIX                           January 18, 2023                           UNIX
