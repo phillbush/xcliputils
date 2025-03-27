@@ -5,131 +5,78 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
-#include <X11/extensions/Xfixes.h>
+
+#include <control/selection.h>
 
 #include "util.h"
 
-static void
-usage(void)
-{
-	(void)fprintf(stderr, "usage: xclipowner [-pw]\n");
-	exit(EXIT_FAILURE);
-}
-
-void
-printwinid(Window win)
-{
-	(void)printf("0x%08lX\n", win);
-	fflush(stdout);
-}
-
 int
-printowner(Display *display, Window window, int xfixes, Atom selection)
+main(void)
 {
-	(void)xfixes;
-	(void)window;
-	printwinid(XGetSelectionOwner(display, selection));
-	return 1;
-}
+	Display *display;
+	struct ctrlsel content = { .data = NULL };
+	Atom selection;
+	Atom *targets;
+	Time timestamp, epoch;
+	size_t ntargets;
+	Window owner;
+	int status;
 
-int
-watchowner(Display *display, Window window, int xfixes, Atom selection)
-{
-	XEvent xev;
-	XFixesSelectionNotifyEvent *xselev;
-	Atom manageratom;
-	Window manager;
+	display = xinit();
+	selection = getatom(display, SELECTION);
+	timestamp = getservertime(display);
+	if (timestamp == 0)
+		errx(EXIT_FAILURE, "cannot get server time");
 
-	manageratom = XInternAtom(display, "CLIPBOARD_MANAGER", False);
-	if (manageratom == None) {
-		warnx("could not intern atom");
-		return 0;
-	}
-	XFixesSelectSelectionInput(
-		display,
-		window,
-		manageratom,
-		XFixesSetSelectionOwnerNotifyMask
+	/* 2nd field: owner */
+	/* must be get before timestamp to circumvent race conditions */
+	owner = XGetSelectionOwner(display, selection);
+	if (owner == None)
+		return EXIT_FAILURE;
+
+	/* 1st field: epoch */
+	status = ctrlsel_request(
+		display, timestamp, selection,
+		getatom(display, "TIMESTAMP"), &content
 	);
-	manager = XGetSelectionOwner(display, manageratom);
-	printowner(display, window, xfixes, selection);
-	while (!XNextEvent(display, &xev)) switch (xev.type) {
-	case DestroyNotify:
-		if (xev.xdestroywindow.window != window)
-			break;
-		return 1;
-	default:
-		if (xev.type != xfixes + XFixesSelectionNotify)
-			break;
-		xselev = (XFixesSelectionNotifyEvent *)&xev;
-		if (xselev->selection == manageratom) {
-			manager = xselev->owner;
-			break;
-		}
-		if (xselev->selection != selection)
-			break;
-		if (xselev->owner != manager)
-			printwinid(xselev->owner);
-		break;
+	if (status <= 0 || content.format != 32 || content.length != 1 ||
+	    (content.type != XA_INTEGER && content.type != XA_CARDINAL)) {
+		errx(
+			EXIT_FAILURE, "ill selection owner: %s",
+			"cannot get selection ownership time"
+		);
 	}
-	/* unreachable */
-	return 0;
-}
+	epoch = *(long *)content.data;
+	XFree(content.data);
+	if (timestamp < epoch) /* selection ownership changed (race condition) */
+		return EXIT_FAILURE;
 
-int
-main(int argc, char *argv[])
-{
-	int (*func)(Display *, Window, int, Atom);
-	Display *display = NULL;
-	Window window = None;
-	Atom selection = None;
-	int exitval = EXIT_FAILURE;
-	int xfixes, ch, i;
-
-#if __OpenBSD__
-	if (pledge("unix stdio rpath", NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	func = &printowner;
-	while ((ch = getopt(argc, argv, "pw")) != -1) {
-		switch (ch) {
-		case 'p':
-			selection = XA_PRIMARY;
-			break;
-		case 'w':
-			func = &watchowner;
-			break;
-		default:
-			usage();
-			break;
-		}
-	}
-	if (!xinit(&display, &window))
-		goto error;
-#if __OpenBSD__
-	if (pledge("stdio", NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	if (!XFixesQueryExtension(display, &xfixes, &i)) {
-		warnx("could not use XFixes");
-		goto error;
-	}
-	if (selection == None)
-		selection = XInternAtom(display, "CLIPBOARD", False);
-	if (selection == None) {
-		warnx("could not intern atom");
-		goto error;
-	}
-	XFixesSelectSelectionInput(
-		display,
-		window,
-		selection,
-		XFixesSetSelectionOwnerNotifyMask
+	/* 3rd field: supported targets */
+	status = ctrlsel_request(
+		display, timestamp, selection,
+		getatom(display, "TARGETS"), &content
 	);
-	if (!(*func)(display, window, xfixes, selection))
-		goto error;
-	exitval = EXIT_SUCCESS;
-error:
-	xclose(display, window);
-	return exitval;
+	if (status <= 0 || content.format != 32 || content.type != XA_ATOM) {
+		errx(
+			EXIT_FAILURE, "ill selection owner: %s",
+			"cannot get list of supported targets"
+		);
+	}
+	targets = content.data;
+	ntargets = content.length;
+
+	printf("%010lu", epoch);
+	printf("\t0x%08lX", owner);
+	for (size_t i = 0; i < ntargets; i++) {
+		char *name;
+
+		name = XGetAtomName(display, targets[i]);
+		printf("\t%s", name);
+		XFree(name);
+	}
+	printf("\n");
+
+	XFree(content.data);
+	XCloseDisplay(display);
+	return EXIT_SUCCESS;
 }

@@ -1,0 +1,218 @@
+.Dd March 27, 2025
+.Dt XCLIPUTILS 1
+.Os
+.Sh NAME
+.Nm xclipd ,
+.Nm xclipin ,
+.Nm xclipout ,
+.Nm xselin ,
+.Nm xselout ,
+.Nm xclipowner ,
+.Nm xselpowner ,
+.Nm xclipwatch ,
+.Nm xselwatch
+.Nd X11 clipboard management utilities
+.Sh SYNOPSIS
+.Ev DISPLAY Ns = Ns display
+.Pp
+.Nm xclipd
+.Pp
+.Nm xclipin
+.Op Ar target ...
+.Op < Ns Ar file
+.Nm xclipout
+.Op Ar target ...
+.Op > Ns Ar file
+.Nm xclipowner
+.Nm xclipwatch
+.Pp
+.Nm xselin
+.Op Ar target ...
+.Op < Ns Ar file
+.Nm xselout
+.Op Ar target ...
+.Op > Ns Ar file
+.Nm xselowner
+.Nm xselwatch
+.Sh DESCRIPTION
+.Nm xclipd
+keeps the contents of the
+.Dv CLIPBOARD
+selection into both
+.Dv CLIPBOARD
+and
+.Dv PRIMARY
+selections
+.Po
+which are usually pasted with
+.Sy Ctrl-V
+and the middle mouse button, respectively
+.Pc .
+It allows the user to close a window without losing the copied data.
+It does not daemonize itself;
+therefore, it should be run in the background.
+.Pp
+.Nm xclipin
+and
+.Nm xselin
+read data from standard input and make it available on the
+.Dv CLIPBOARD
+and
+.Dv PRIMARY
+selections respectively, in the given
+.Ar target Ns s .
+If no
+.Ar target
+argument is provided,
+they make selection available as common string targets
+.Po
+.Dv UTF8_STRING,
+.Dv STRING ,
+etc
+.Pc .
+If the standard input is empty, the selection is cleaned.
+.Pp
+.Nm xclipout
+and
+.Nm xselout
+write to the standard output the content of the
+.Dv CLIPBOARD
+and
+.Dv PRIMARY
+selections respectively, in the first
+.Ar target
+supported by the selection owner.
+If no
+.Ar target
+argument is provided, they request selection in the
+.Dv UTF8_STRING
+target, if available
+.Po
+or the
+.Dv STRING
+target, otherwise
+.Pc .
+.Pp
+.Nm xclipowner
+and
+.Nm xselowner
+show information about the current owner of the
+.Dv CLIPBOARD
+and
+.Dv PRIMARY
+selections respectively, if any,
+as a single line of tab-separated values:
+.Bl -bullet -compact -width "X"
+.It
+The first value is the timestamp of the ownership.
+.It
+The second value is the ID of the window which owns the selection.
+.It
+The remaining values, if any, are the supported targets.
+.El
+.Pp
+.Nm xclipwatch
+and
+.Nm xselwatch
+watch the
+.Dv CLIPBOARD
+and
+.Dv PRIMARY
+selections respectively,
+and print information about their owner as tab-separated values (see above)
+whenever ownership changes,
+one line per each ownership change.
+However, if the owner is the clipboard manager,
+it is ignored and no information is displayed for it.
+.Sh DIAGNOSTICS
+If the requested selection is not owned,
+.Nm xclipout ,
+.Nm xselout ,
+.Nm xclipowner ,
+and
+.Nm xselowner
+return a non-zero exit status.
+.Pp
+If the requested selection can not be converted to any
+.Ar target ,
+then
+.Nm xclipout
+and
+.Nm xselout
+write a diagnostic message to the standard error and return a non-zero exit status.
+.Pp
+Before the
+.Nm xclipin
+and
+.Nm xselin
+utilities exit, they fork a background process to communicate with requestors.
+But if an error occurs before the inter-process communication initiates,
+they exit non-zero and do not fork the background process.
+.Pp
+For all utilities,
+it is an error if the
+.Ev DISPLAY
+environment variable is not set to a valid display.
+.Sh EXAMPLES
+Read an JPEG file into the clipboard:
+.Bd -literal -offset indent -compact
+$ xclipin image/jpeg </path/to/file.jpg
+.Ed
+.Pp
+Same as before, but use
+.Xr file 1
+to guess the mimetype of the file:
+.Bd -literal -offset indent -compact
+$ xclipin \(dq$(file -ib /path/to/file.jpg)\(dq </path/to/file.jpg
+.Ed
+.Pp
+Clean the clipboard:
+.Bd -literal -offset indent -compact
+$ xclipin </dev/null
+.Ed
+.Pp
+Read a string to be pasted on middle mouse button:
+.Bd -literal -offset indent -compact
+$ echo "Paste me!" | xselin
+.Ed
+.Pp
+Read a string output from a command into the primary selection,
+removing all leading and trailing space around it:
+.Bd -literal -offset indent -compact
+$ cmd | awk \(aqNF{$1=$1;print}\(aq | xselin
+.Ed
+.Pp
+Save
+.Dv STRING
+data from the clipboard into primary selection.
+.Po
+NOTE: the
+.Nm xclipd
+clipboard manager already does this for any target when run in the background
+.Pc :
+.Bd -literal -offset indent -compact
+$ xclipout | xselin
+.Ed
+.Pp
+Write a JPEG image from the clipboard into a file:
+.Bd -literal -offset indent -compact
+$ xclipout image/jpeg >/path/to/file.jpg
+.Ed
+.Pp
+List targets for the current clipboard selection
+.Po
+including meta-targets, like
+.Dv MULTIPLE
+and
+.Dv TIMESTAMP
+.Pc :
+.Bd -literal -offset indent -compact
+$ xclipowner | cut -f3-
+.Ed
+.Pp
+Get the current owner of the primary selection:
+.Bd -literal -offset indent -compact
+$ xselowner | cut -f2
+.Ed
+.Sh SEE ALSO
+.Xr X 7

@@ -1,400 +1,206 @@
 #include <err.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/extensions/Xfixes.h>
 
+#include <control/selection.h>
+
 #include "util.h"
-#include "ctrlsel.h"
 
-#define NSTEPS  3
+#define ENUM(sym, str) sym,
+#define NAME(sym, str) (str==NULL?#sym:str),
+#define ATOMS(X) \
+	X(CLIPBOARD,		NULL) \
+	X(CLIPBOARD_MANAGER,	NULL) \
+	X(DELETE,		NULL) \
+	X(MULTIPLE,		NULL) \
+	X(SAVE_TARGETS,		NULL) \
+	X(TARGETS,		NULL) \
+	X(TEXT,			NULL) \
+	X(TIMESTAMP,		NULL) \
+	X(INSERT_PROPERTY,	NULL) \
+	X(INSERT_SELECTION,	NULL) \
+	X(UTF8_STRING,		NULL) \
+	X(STRING,		NULL) \
+	X(TEXT_PLAIN,		"text/plain") \
+	X(TEXT_PLAIN_UTF8,	"text/plain;charset=utf-8") \
 
-enum Atom {
-	ATOM_PAIR,
-	CLIPBOARD,
-	CLIPBOARD_MANAGER,
-	DELETE,
-	INCR,
-	MANAGER,
-	MULTIPLE,
-	_NULL,
-	PRIMARY,
-	SAVE_TARGETS,
-	TARGETS,
-	TEXT,
-	TIMESTAMP,
-	UTF8_STRING,
-	_TIMESTAMP_PROP,
-	ATOM_LAST
+enum atoms {
+	ATOMS(ENUM)
+	NATOMS
 };
 
-enum Event {
-	EV_INTERNAL,    /* internal event */
-	EV_NEWOWNER,    /* a new owner acquired the clipboard */
-	EV_CLOSE,       /* we should close the manager */
-	EV_ERROR,
-	EV_OK,
+struct clipboard {
+	struct ctrlsel *contents;
+	Atom *targets;
+	size_t ntargets;
 };
 
-struct Manager {
-	Time time;                      /* timestamp to own clipboard */
-	Window window;                  /* manager window */
-	int dowait;                     /* whether to wait for next owner */
-	unsigned long ntargets;         /* number of targets the last owner supported */
-	struct CtrlSelTarget *targets;  /* the targets last owner supported */
-	CtrlSelContext *context;        /* selection context for CLIPBOARD_MANAGER */
-};
-
-static Display *display = NULL;
-static Atom atoms[ATOM_LAST] = { 0 };
-static int xfixes = 0;
-static char *atomnames[ATOM_LAST] = {
-	[ATOM_PAIR]             = "ATOM_PAIR",
-	[CLIPBOARD]             = "CLIPBOARD",
-	[CLIPBOARD_MANAGER]     = "CLIPBOARD_MANAGER",
-	[DELETE]                = "DELETE",
-	[INCR]                  = "INCR",
-	[MANAGER]               = "MANAGER",
-	[MULTIPLE]              = "MULTIPLE",
-	[_NULL]                 = "NULL",
-	[PRIMARY]               = "PRIMARY",
-	[SAVE_TARGETS]          = "SAVE_TARGETS",
-	[TARGETS]               = "TARGETS",
-	[TEXT]                  = "TEXT",
-	[TIMESTAMP]             = "TIMESTAMP",
-	[UTF8_STRING]           = "UTF8_STRING",
-	[_TIMESTAMP_PROP]       = "_TIMESTAMP_PROP",
-};
-
-static void
-freetargets(struct Manager *manager)
-{
-	unsigned long i;
-
-	for (i = 0; i < manager->ntargets; i++)
-		free(manager->targets[i].buffer);
-	free(manager->targets);
-	manager->targets = NULL;
-	manager->ntargets = 0;
-}
-
-static enum Event
-nextevent(struct Manager *manager, XEvent *xev)
-{
-	XFixesSelectionNotifyEvent *xselev;
-
-loop:
-	(void)XNextEvent(display, xev);
-	xselev = ((XFixesSelectionNotifyEvent *)xev);
-	switch (ctrlsel_send(manager->context, xev)) {
-	case CTRLSEL_INTERNAL:
-		/*
-		 * Probably unreachable (the clipboard
-		 * manager should not maintain internal
-		 * state).
-		 */
-		goto loop;
-	case CTRLSEL_ERROR:
-		/*
-		 * Probably unreachable (the clipboard
-		 * manager should not maintain internal
-		 * state).
-		 */
-		warnx("could not convert the manager selection");
-		return EV_CLOSE;
-	case CTRLSEL_LOST:
-		/*
-		 * We lost the manager selection to
-		 * another clipboard manager.  Stop
-		 * running.
-		 */
-		return EV_CLOSE;
-	default:
-		break;
-	}
-	if (xev->type == xfixes + XFixesSelectionNotify &&
-	    xselev->selection == atoms[CLIPBOARD] &&
-	    xselev->owner != manager->window) {
-		/*
-		 * Another client got the clipboard.
-		 * Request its content.
-		 */
-		manager->time = xselev->timestamp;
-		manager->dowait = 0;
-		return EV_NEWOWNER;
-	}
-	if (xev->type == DestroyNotify &&
-	    xev->xdestroywindow.window == manager->window) {
-		/*
-		 * Someone destroyed our window.
-		 * Stop running.
-		 */
-		return EV_CLOSE;
-	}
-	return EV_INTERNAL;
-}
-
-static enum Event
-waitowner(struct Manager *manager)
-{
-	XEvent xev;
-	enum Event retval = EV_OK;
-
-	for (;;)
-		if ((retval = nextevent(manager, &xev)) != EV_OK)
-			return retval;
-	return EV_OK;           /* unreachable */
-}
-
-static enum Event
-translate(int receive)
-{
-	if (receive == CTRLSEL_RECEIVED)
-		return EV_OK;
-	if (receive == CTRLSEL_ERROR)
-		return EV_ERROR;
-	return EV_INTERNAL;
-}
-
-static enum Event
-gettargets(struct Manager *manager)
-{
-	XEvent xev;
-	CtrlSelContext *context;
-	struct CtrlSelTarget meta;
-	unsigned long i;
-	Atom target;
-	enum Event retval = EV_OK;
-
-	ctrlsel_filltarget(atoms[TARGETS], XA_ATOM, 32, NULL, 0, &meta);
-	context = ctrlsel_request(
-		display,
-		manager->window,
-		atoms[CLIPBOARD],
-		manager->time,
-		&meta, 1
-	);
-	if (context == NULL)
-		return EV_ERROR;
-	for (;;) {
-		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
-			break;
-		if ((retval = translate(ctrlsel_receive(context, &xev))) != EV_INTERNAL)
-			break;
-	}
-	if (retval != EV_OK)
-		goto error;
-	if (meta.buffer == NULL || meta.nitems == 0)
-		goto error;
-	if (meta.format != 32 || meta.type != XA_ATOM)
-		goto error;
-	manager->targets = calloc(meta.nitems, sizeof(*manager->targets));
-	if (manager->targets == NULL) {
-		warn("calloc");
-		goto error;
-	}
-	manager->ntargets = 0;
-	for (i = 0; i < meta.nitems; i++) {
-		target = ((Atom *)meta.buffer)[i];
-		if (target == atoms[ATOM_PAIR] ||
-		    target == atoms[CLIPBOARD] ||
-		    target == atoms[CLIPBOARD_MANAGER] ||
-		    target == atoms[DELETE] ||
-		    target == atoms[INCR] ||
-		    target == atoms[MANAGER] ||
-		    target == atoms[MULTIPLE] ||
-		    target == atoms[_NULL] ||
-		    target == atoms[PRIMARY] ||
-		    target == atoms[SAVE_TARGETS] ||
-		    target == atoms[TARGETS] ||
-		    target == atoms[TIMESTAMP] ||
-		    target == atoms[_TIMESTAMP_PROP]) {
-			continue;
-		}
-		ctrlsel_filltarget(
-			((Atom *)meta.buffer)[i],
-			((Atom *)meta.buffer)[i],
-			8, NULL, 0,
-			&manager->targets[manager->ntargets]
-		);
-		manager->ntargets++;
-	}
-error:
-	free(meta.buffer);
-	return retval;
-}
-
-static enum Event
-savetargets(struct Manager *manager)
-{
-	XEvent xev;
-	CtrlSelContext *context;
-	enum Event retval = EV_OK;
-
-	context = ctrlsel_request(
-		display,
-		manager->window,
-		atoms[CLIPBOARD],
-		manager->time,
-		manager->targets,
-		manager->ntargets
-	);
-	if (context == NULL)
-		return EV_ERROR;
-	for (;;) {
-		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
-			break;
-		if ((retval = translate(ctrlsel_receive(context, &xev))) != EV_INTERNAL)
-			break;
-	}
-	return retval;
-}
-
-static enum Event
-ownclipboard(struct Manager *manager)
-{
-	XEvent xev;
-	CtrlSelContext *clipboard, *primary;
-	enum Event retval = EV_OK;
-
-	clipboard = ctrlsel_setowner(
-		display,
-		manager->window,
-		atoms[CLIPBOARD],
-		manager->time,
-		0,
-		manager->targets,
-		manager->ntargets
-	);
-	if (clipboard == NULL)
-		return EV_ERROR;
-	primary = ctrlsel_setowner(
-		display,
-		manager->window,
-		atoms[PRIMARY],
-		manager->time,
-		0,
-		manager->targets,
-		manager->ntargets
-	);
-	for (;;) {
-		if ((retval = nextevent(manager, &xev)) != EV_INTERNAL)
-			break;
-		if (primary != NULL)
-			(void)ctrlsel_send(primary, &xev);
-		(void)ctrlsel_send(clipboard, &xev);
-	}
-	if (primary != NULL)
-		ctrlsel_disown(primary);
-	ctrlsel_disown(clipboard);
-	return retval;
-}
+static Display *display;
+static Window manager;
+static Atom atomtab[NATOMS];
+static int xselection_event;
 
 static int
-init(struct Manager *manager)
+callback(void *arg, Atom target, struct ctrlsel *content)
 {
-	int i;
+	struct clipboard *clip = arg;
 
-	if (!xinit(&display, &manager->window))
-		goto error;
-#if __OpenBSD__
-	if (pledge("stdio", NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	if (!XFixesQueryExtension(display, &xfixes, &i)) {
-		warnx("could not use XFixes");
-		goto error;
+	for (size_t i = 0; i < clip->ntargets; i++) {
+		if (target == clip->targets[i]) {
+			*content = clip->contents[i];
+			return True;
+		}
 	}
-	if (!XInternAtoms(display, atomnames, ATOM_LAST, False, atoms)) {
-		warnx("could not intern atoms");
-		goto error;
+	return False;
+}
+
+static Time
+next_clipboard(Time epoch, struct clipboard *clip)
+{
+	XEvent event;
+	XFixesSelectionNotifyEvent *xselection = (void *)&event;
+	int error;
+
+	for (;;) switch (XNextEvent(display, &event), event.type) {
+	case SelectionRequest:
+		if (clip == NULL || clip->ntargets == 0)
+			continue;
+		if (event.xselectionrequest.owner != manager)
+			continue;
+		if (event.xselectionrequest.selection != atomtab[CLIPBOARD] &&
+		    event.xselectionrequest.selection != XA_PRIMARY)
+			continue;
+		error = -ctrlsel_answer(
+			&event, epoch,
+			clip->targets, clip->ntargets,
+			callback, clip
+		);
+		if (error) warnx(
+			"could not answer client 0x%08lX: %s",
+			event.xselectionrequest.requestor,
+			strerror(error)
+		);
+		continue;
+	case SelectionClear:
+		if (event.xselectionclear.window != manager)
+			continue;
+		if (event.xselectionclear.selection == atomtab[CLIPBOARD_MANAGER])
+			return 0;
+		continue;
+	case DestroyNotify:
+		if (event.xdestroywindow.window == manager)
+			return 0;
+		continue;
+	default:
+		if (event.type != xselection_event)
+			continue;
+		if (xselection->selection != atomtab[CLIPBOARD])
+			continue;
+		if (xselection->owner == manager || xselection->owner == None)
+			continue;
+		return xselection->timestamp;
 	}
-	if (XGetSelectionOwner(display, atoms[CLIPBOARD_MANAGER]) != None) {
-		warnx("there's already a clipboard manager running");
-		goto error;
+	return 0;
+}
+
+static size_t
+gettargets(Time timestamp, Atom **targets)
+{
+	struct ctrlsel content = { 0 };
+
+	if (ctrlsel_request(
+		display, timestamp, atomtab[CLIPBOARD],
+		atomtab[TARGETS], &content
+	) > 0 && content.format == 32 && content.type == XA_ATOM) {
+		*targets = content.data;
+		return content.length;
 	}
-	manager->context = ctrlsel_setowner(
-		display,
-		manager->window,
-		atoms[CLIPBOARD_MANAGER],
-		CurrentTime,
-		1,
-		NULL, 0
-	);
-	if (manager->context == NULL) {
-		warnx("could not own manager selection");
-		goto error;
-	}
-	XFixesSelectSelectionInput(
-		display,
-		manager->window,
-		atoms[CLIPBOARD],
-		XFixesSetSelectionOwnerNotifyMask
-	);
-	return 1;
-error:
+	XFree(content.data);
+	*targets = NULL;
 	return 0;
 }
 
 int
 main(void)
 {
-	enum Event (*steps[NSTEPS])(struct Manager *manager) = {
-		/*
-		 * First we request the original clipboard owner the
-		 * targets it supports.
-		 */
-		[0] = gettargets,
+	char *atomnames[] = { ATOMS(NAME) };
+	Time timestamp;
+	struct ctrlsel *buf = NULL;
 
-		/*
-		 * Then we request the original clipboard owner to
-		 * convert the clipboard into those targets for us.
-		 */
-		[1] = savetargets,
+	display = xinit();
+	manager = createwindow(display);
+	if (!XInternAtoms(display, atomnames, NATOMS, False, atomtab))
+		errx(EXIT_FAILURE, "could not intern atoms");
+	if (XGetSelectionOwner(display, atomtab[CLIPBOARD_MANAGER]) != None)
+		errx(EXIT_FAILURE, "there's already another clipboard manager running");
+	timestamp = ctrlsel_own(display, manager, CurrentTime, atomtab[CLIPBOARD_MANAGER]);
+	if (timestamp == 0)
+		errx(EXIT_FAILURE, "could not own clipboard manager");
+	if (!XFixesQueryExtension(display, &xselection_event, (int[]){0}))
+		errx(EXIT_FAILURE, "could not use XFixes");
+	xselection_event += XFixesSelectionNotify;
+	XFixesSelectSelectionInput(
+		display, manager, atomtab[CLIPBOARD],
+		XFixesSetSelectionOwnerNotifyMask
+	);
 
-		/*
-		 * Then we get the ownership of the clipboard, supplying
-		 * to any requestors the content that the previous owner
-		 * gave to us.
-		 */
-		[2] = ownclipboard,
+	do {
+		size_t n;
+		Time epoch;
+		struct clipboard clip;
 
-		/*
-		 * We'll loop through all those steps in the main loop.
-		 */
-	};
-	struct Manager manager;
-	enum Event ev;
-	int i;
+		n = gettargets(timestamp, &clip.targets);
+		for (size_t i = clip.ntargets = 0; i < n; i++) {
+			/* discard meta-targets */
+			if (clip.targets[i] == atomtab[TARGETS] ||
+			    clip.targets[i] == atomtab[MULTIPLE] ||
+			    clip.targets[i] == atomtab[TIMESTAMP] ||
+			    clip.targets[i] == atomtab[DELETE] ||
+			    clip.targets[i] == atomtab[INSERT_PROPERTY] ||
+			    clip.targets[i] == atomtab[INSERT_SELECTION])
+				continue;
+			clip.targets[clip.ntargets++] = clip.targets[i];
+		}
 
-#if __OpenBSD__
-	if (pledge("unix stdio rpath", NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	manager = (struct Manager){
-		.time = CurrentTime,
-		.window = None,
-		.dowait = 0,
-		.ntargets = 0,
-		.targets = NULL,
-		.context = NULL,
-	};
-	if (!init(&manager))
-		goto done;
-	for (;;) {
-		for (i = 0; i < NSTEPS; i++)
-			if ((ev = (*steps[i])(&manager)) != EV_OK)
-				break;
-		freetargets(&manager);
-		if (ev == EV_ERROR)
-			ev = waitowner(&manager);
-		if (ev == EV_CLOSE)
-			break;
-	}
-	ctrlsel_disown(manager.context);
-done:
-	xclose (display, manager.window);
+		clip.contents = NULL;
+		if (clip.ntargets > 0) {
+			clip.contents = reallocarray(buf, clip.ntargets, sizeof(buf));
+		}
+		if (clip.contents == NULL) {
+			XFree(clip.targets);
+			timestamp = next_clipboard(0, NULL);
+			continue;
+		}
+		buf = clip.contents;
+
+		for (size_t i = 0; i < clip.ntargets; i++) {
+			clip.contents[i].data = NULL;
+			(void)ctrlsel_request(
+				display, timestamp, atomtab[CLIPBOARD],
+				clip.targets[i], &clip.contents[i]
+			);
+		}
+
+		epoch = ctrlsel_own(
+			display, manager, timestamp, atomtab[CLIPBOARD]
+		);
+		(void)ctrlsel_own(
+			display, manager, timestamp, XA_PRIMARY
+		);
+
+		timestamp = next_clipboard(epoch, &clip);
+		XFree(clip.targets);
+		for (size_t i = 0; i < clip.ntargets; i++) {
+			XFree(clip.contents[i].data);
+		}
+	} while (timestamp != 0);
+	free(buf);
+	XDestroyWindow(display, manager);
+	XCloseDisplay(display);
 	return EXIT_FAILURE;
 }

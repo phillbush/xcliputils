@@ -1,56 +1,54 @@
-PROG = xclipd xclipin xclipout xclipowner
-OBJS = ${PROG:=.o} ctrlsel.o util.o
-SRCS = ${OBJS:.o=.c}
-MAN  = xclipd.1
+SEL_PROGS = xselin xselout xselowner xselwatch
+CLIP_PROGS = xclipin xclipout xclipowner xclipwatch
+PROGS = ${SEL_PROGS} ${CLIP_PROGS} xclipd
 
-PREFIX ?= /usr/local
-MANPREFIX ?= ${PREFIX}/share/man
-LOCALINC ?= /usr/local/include
-LOCALLIB ?= /usr/local/lib
-X11INC ?= /usr/X11R6/include
-X11LIB ?= /usr/X11R6/lib
+SHARE_OBJS = control/selection.o util.o
+PROG_OBJS = ${PROGS:=.o}
+CLIP_OBJS = ${CLIP_PROGS:=.o}
+SEL_OBJS = ${SEL_PROGS:=.o}
+OBJS = ${PROG_OBJS} ${SHARE_OBJS}
 
-DEFS = -D_POSIX_C_SOURCE=200809L -DGNU_SOURCE -D_BSD_SOURCE
-INCS = -I${LOCALINC} -I${X11INC}
-LIBS = -L${LOCALLIB} -L${X11LIB} -lXcursor -lX11
+SRCS = ${CLIP_OBJS:.o=.c} ${SHARE_OBJS:.o=.c} xclipd.c
+MAN = xcliputils.1
 
-bindir = ${DESTDIR}${PREFIX}/bin
-mandir = ${DESTDIR}${MANPREFIX}/man1
+DEBUG_FLAGS = \
+	-g -O0 -DDEBUG -Wall -Wextra -Wpedantic
 
-all: ${PROG}
+PROG_CPPFLAGS = \
+	-I. -I/usr/local/include -I/usr/X11R6/include \
+	-D_POSIX_C_SOURCE=202405L ${CPPFLAGS}
 
-xclipd xclipowner: ${@:=.o} ctrlsel.o util.o
-	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} -lXfixes ${LDFLAGS}
+PROG_CFLAGS = \
+	-std=c99 -pedantic \
+	${PROG_CPPFLAGS} \
+	${CFLAGS} ${DEBUG_FLAGS}
 
-xclipin xclipout: ${@:=.o} ctrlsel.o util.o
-	${CC} -o $@ ${@:=.o} ctrlsel.o util.o ${LIBS} ${LDFLAGS}
+PROG_LDFLAGS = \
+	-L/usr/local/lib -L/usr/X11R6/lib -lX11 -lXfixes \
+	${LDFLAGS} ${LDLIBS} ${DEBUG_FLAGS}
 
+all: ${PROGS}
+
+${SHARE_OBJS}: ${@:.o=.h}
+
+${PROGS}: ${@:=.o} ${SHARE_OBJS}
+	${CC} -o $@ ${@:=.o} ${SHARE_OBJS} ${PROG_LDFLAGS}
+
+${PROG_OBJS}: control/selection.h util.h
+${SEL_OBJS}: ${@:xsel%.o=xclip%.c}
+	${CC} ${PROG_CFLAGS} '-DSELECTION="PRIMARY"' -o $@ -c ${@:xsel%.o=xclip%.c}
+${CLIP_OBJS}: ${@:.o=.c}
+	${CC} ${PROG_CFLAGS} '-DSELECTION="CLIPBOARD"' -o $@ -c ${@:.o=.c}
 .c.o:
-	${CC} -std=c99 -pedantic ${DEFS} ${INCS} ${CFLAGS} ${CPPFLAGS} -o $@ -c $<
-
-${OBJS}: ctrlsel.h util.h
+	${CC} ${PROG_CFLAGS} -o $@ -c $<
 
 README: ${MAN}
-	mandoc -I os=UNIX -T ascii ${MAN} | col -b | expand -t 8 >README
+	mandoc -I os=UNIX -T utf8 ${MAN} | awk '{while(sub(/.\b/,""))}1' >README
 
 tags: ${SRCS}
 	ctags ${SRCS}
 
-lint: ${SRCS}
-	-mandoc -T lint -W warning ${MAN}
-	-clang-tidy ${SRCS} -- -std=c99 ${DEFS} ${INCS} ${CPPFLAGS}
-
 clean:
-	rm -f ${OBJS} ${PROG} ${PROG:=.core} tags
+	rm -f ${OBJS} ${PROGS} ${PROGS:=.core} tags
 
-install: all
-	mkdir -p ${bindir}
-	mkdir -p ${mandir}
-	for i in ${PROG} ; do install -m 755 "$$i" "${bindir}/$$i" ; done
-	install -m 644 ${MAN} ${mandir}/${MAN}
-
-uninstall:
-	-for i in ${PROG} ; do rm "${bindir}/$$i" ; done
-	-rm ${mandir}/${MAN}
-
-.PHONY: all tags clean install uninstall
+.PHONY: all clean

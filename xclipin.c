@@ -2,7 +2,6 @@
 #include <sys/mman.h>
 
 #include <err.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,186 +11,110 @@
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 
-#include "util.h"
-#include "ctrlsel.h"
+#include <control/selection.h>
 
-#define SPACE   " \f\n\r\t\v"
+#include "util.h"
+
+static int
+callback(void *arg, Atom target, struct ctrlsel *content)
+{
+	(void)target;
+	*content = *(struct ctrlsel *)arg;
+	return 1;
+}
 
 static void
-usage(void)
+send_clip(char * const targetnames[], char const *data, size_t size)
 {
-	fprintf(stderr, "usage: xclipin [-psw] [-t target] [file]\n");
-	exit(EXIT_FAILURE);
-}
+	Display *display;
+	Window owner;
+	XEvent event;
+	Atom selection;
+	Atom polymorphic_type, string_type;
+	Atom targets[32];       /* optimist maximum */
+	Time epoch;
+	size_t ntargets;
+	int error;
 
-static int
-fillbuffer(int fd, void *buf, size_t *size)
-{
-	ssize_t got;
-	size_t left = *size;
-
-	while (left != 0) {
-		if ((got = read(fd, buf, left)) == -1) {
-			if (errno == EINTR)
-				continue;
-			warn("read");
-			return -1;
-		}
-		if (got == 0)
-			break;
-		buf = (char *)buf + got;
-		left -= got;
+	display = xinit();
+	selection = getatom(display, SELECTION);
+	if (size < 1) {
+		ctrlsel_own(display, None, CurrentTime, selection);
+		XCloseDisplay(display);
+		return;
 	}
-	*size -= left;
-	return 0;
-}
-
-static int
-xclipin(Atom selection, char *targetstr, char *data, size_t size, int wflag)
-{
-	CtrlSelContext *context;
-	struct CtrlSelTarget target;
-	XEvent xev;
-	Display *display = NULL;
-	Window window = None;
-	Atom targetatom = None;
-	int retval = EXIT_FAILURE;
-	int status;
-
-	if (!xinit(&display, &window))
-		goto error;
-#if __OpenBSD__
-	if (pledge((wflag ? "stdio" : "stdio proc"), NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	if (selection == None)
-		selection = XInternAtom(display, "CLIPBOARD", False);
-	if (selection == None) {
-		warnx("could not intern atom");
-		goto error;
+	owner = createwindow(display);
+	for (ntargets = 0; ntargets < LEN(targets) && targetnames[ntargets] != NULL; ntargets++)
+		targets[ntargets] = getatom(display, targetnames[ntargets]);
+	polymorphic_type = getatom(display, "TEXT");
+	string_type = getatom(display, "STRING");
+	if (ntargets == 0) {
+		targets[ntargets++] = getatom(display, "UTF8_STRING");
+		targets[ntargets++] = string_type;
+		targets[ntargets++] = polymorphic_type;
+		targets[ntargets++] = getatom(display, "COMPOUND_TEXT");
 	}
-	if ((targetatom = XInternAtom(display, targetstr, False)) == None) {
-		warnx("could not intern atom");
-		goto error;
+	if ((epoch = ctrlsel_own(display, owner, CurrentTime, selection)) == 0)
+		errx(EXIT_FAILURE, "could not own selection");
+	daemonize();
+	while (!XNextEvent(display, &event)) switch (event.type) {
+	case SelectionClear:
+		if (event.xselectionclear.window == owner)
+			return;
+		continue;
+	case DestroyNotify:
+		if (event.xdestroywindow.window == owner)
+			return;
+		continue;
+	case SelectionRequest:
+		if (event.xselectionrequest.selection != selection)
+			continue;
+		error = -ctrlsel_answer(
+			&event, epoch, targets, ntargets,
+			callback, (void *)&(struct ctrlsel){
+				.data = (void *)data,
+				.length = size,
+				.format = 8,
+				.type = targets[0] == polymorphic_type
+					? string_type : targets[0],
+			}
+		);
+		if (error)
+			warnx("could not request selection: %s", strerror(error));
+		continue;
 	}
-	if (!wflag)
-		if (xfork() == -1 || xfork() == -1)     /* double fork */
-			goto error;
-	ctrlsel_filltarget(
-		targetatom,
-		targetatom,
-		8,
-		(unsigned char *)data,
-		size,
-		&target
-	);
-	context = ctrlsel_setowner(
-		display,
-		window,
-		selection,
-		CurrentTime,
-		0,
-		&target, 1
-	);
-	if (context == NULL)
-		goto error;
-	for (;;) {
-		(void)XNextEvent(display, &xev);
-		status = ctrlsel_send(context, &xev);
-		if (status == CTRLSEL_LOST || status == CTRLSEL_ERROR) {
-			break;
-		}
-	}
-	ctrlsel_disown(context);
-	if (status != CTRLSEL_ERROR)
-		retval = EXIT_SUCCESS;
-error:
-	xclose(display, window);
-	return retval;
-}
-
-static size_t
-strnrspn(char *buf, char *charset, size_t len)
-{
-	while (len > 0 && strchr(charset, buf[len - 1]) != NULL)
-		len--;
-	return len;
+	XDestroyWindow(display, owner);
+	XCloseDisplay(display);
 }
 
 int
 main(int argc, char *argv[])
 {
-	struct stat sb;
-	Atom selection = None;
-	int fd = STDIN_FILENO;
-	int wflag = 0;
-	int ignorespace = 1;
-	int mapped = 1;
-	int retval = EXIT_FAILURE;
-	int ch;
-	size_t size, span;
-	char *targetstr = "UTF8_STRING";
-	char *data = NULL;
-	char *buf = NULL;
+	struct stat stat;
+	FILE *stream;
+	char buf[BUFSIZ];
+	char *data;
+	ssize_t nread;
+	size_t size;
 
-#if __OpenBSD__
-	if (pledge("unix stdio rpath proc", NULL) == -1)
-		err(EXIT_FAILURE, "pledge");
-#endif
-	while ((ch = getopt(argc, argv, "pst:w")) != -1) {
-		switch (ch) {
-		case 'p':
-			selection = XA_PRIMARY;
-			break;
-		case 's':
-			ignorespace = 0;
-			break;
-		case 't':
-			targetstr = optarg;
-			break;
-		case 'w':
-			wflag = 1;
-			break;
-		default:
-			usage();
-			break;
-		}
-	}
-	argc -= optind;
-	argv += optind;
-	if (argc > 1)
-		usage();
-	if (argc == 1 && (argv[0][0] != '-' || argv[0][1] != '\0') &&
-	    (fd = open(argv[0], O_RDONLY)) == -1)
-		err(EXIT_FAILURE, "%s", argv[0]);
-	if (fstat(fd, &sb) == -1)
-		err(EXIT_FAILURE, "fstat");
-	data = mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-	if (data == MAP_FAILED) {
-		size = BUFSIZ;
-		mapped = 0;
-		if ((data = malloc(size)) == NULL) {
-			warn("malloc");
-			goto error;
-		}
-		if (fillbuffer(fd, data, &size) == -1) {
-			goto error;
-		}
+	(void)argc;
+	if (fstat(STDIN_FILENO, &stat) == -1)
+		err(EXIT_FAILURE, "stat");
+	data = mmap(NULL, stat.st_size, PROT_READ, MAP_PRIVATE, STDIN_FILENO, 0);
+	if (data != MAP_FAILED) {
+		send_clip(argv+1, data, stat.st_size);
+		munmap(data, stat.st_size);
 	} else {
-		size = sb.st_size;
-	}
-	buf = data;
-	if (ignorespace) {
-		span = strspn(buf, SPACE);
-		buf += span;
-		size = strnrspn(buf, SPACE, size - span);
-	}
-	retval = xclipin(selection, targetstr, buf, size, wflag);
-error:
-	if (mapped)
-		munmap(data, sb.st_size);
-	else
+		stream = open_memstream(&data, &size);
+		while ((nread = read(STDIN_FILENO, buf, sizeof(buf))) != 0) {
+			if (nread == -1)
+				err(EXIT_FAILURE, "read");
+			if ((ssize_t)fwrite(buf, 1, nread, stream) != nread)
+				err(EXIT_FAILURE, "fwrite");
+		}
+		(void)fclose(stream);
+		send_clip(argv+1, data, size);
 		free(data);
-	(void)close(fd);
-	return retval;
+	}
+	return EXIT_SUCCESS;
 }

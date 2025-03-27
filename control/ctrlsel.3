@@ -1,0 +1,543 @@
+.Dd July 18, 2024
+.Dt CTRLSEL 3
+.Os libcontrol
+.Sh NAME
+.Nm ctrlsel_request ,
+.Nm ctrlsel_own ,
+.Nm ctrlsel_answer
+.Nd acquire selection ownership, and answer/request selection conversion
+.Sh SYNOPSIS
+.In X11/Xlib.h
+.In ctrlsel.h
+.Bd -literal
+struct ctrlsel {
+	void    *data;
+	size_t   length;
+	Atom     type;
+	int      format;
+};
+.Ed
+.Pp
+.Ft int
+.Fo ctrlsel_request
+.Fa "Display *display"
+.Fa "Time timestamp"
+.Fa "Atom selection"
+.Fa "Atom target"
+.Fa "struct ctrlsel *content"
+.Fc
+.Ft Time
+.Fo ctrlsel_own
+.Fa "Display *display"
+.Fa "Window owner"
+.Fa "Time timestamp"
+.Fa "Atom selection"
+.Fc
+.Ft int
+.Fo ctrlsel_answer
+.Fa "XEvent const *event"
+.Fa "Time epoch"
+.Fa "Atom const targets[]"
+.Fa "size_t ntargets"
+.Fa "int (*callback)(void *arg, Atom target, struct ctrlsel *content)"
+.Fa "void *arg"
+.Fc
+.Sh DESCRIPTION
+The ctrlsel library implements routines to handle X selections in a synchronous/blocking way;
+so that the programmer does not need to send a selection request,
+wait for the event notifying the request's answer between all the other X events,
+and then handle such notification.
+.Pp
+The
+.Fn ctrlsel_request
+function requests the content of a selection
+.Po
+or, in X terminology,
+it requests the selection to be converted into a target
+.Pc .
+.Pp
+The
+.Fn ctrlsel_own
+function acquires the ownership of a selection.
+.Pp
+The
+.Fn ctrlsel_answer
+answers a selection request made by another client.
+.Pp
+The
+.Fa callback
+function is called by
+.Fn ctrlsel_answer
+to get the content of a selection for the requestor client.
+.Pp
+The
+.Ft "struct ctrlsel"
+structure specifies the content of a selection,
+together with its length (which IS NOT(!) equal to its size in bytes),
+format and type.
+.Ss Parameters
+.Bl -tag -width Ds
+.It Fa arg
+Points to the object given to the
+.Fa callback
+function.
+.It Fa callback
+The function called by
+.Fn ctrlsel_answer
+to convert the selection into a supported target.
+.It Fa content
+Where to store the converted selection data and metadata (format, type, length).
+.It Fa display
+Points to the context of connection to the
+.Xr Xserver 1 .
+.It Fa epoch
+The time of the beginning of the selection ownership.
+Its value should be the last successful ownership timestamp returned by
+.Fn ctrlsel_own .
+.It Fa event
+Points to the
+.Xr XEvent 3
+notifying the owner to answer a request made by another client.
+Its
+.Va display
+member must be the
+.Ft Display
+pointer given to
+.Fn ctrlsel_own .
+.It Fa ntargets
+The number of atoms in the
+.Fa targets
+array.
+.It Fa owner
+The window to acquire selection ownership for.
+.It Fa selection
+The atom naming the selection to be owned/converted.
+.It Fa target
+The atom naming the target into which the
+.Fa selection
+conversion has been requested.
+.It Fa targets
+The array of targets into which the caller supports converting the selection.
+.It Fa timestamp
+The time of the event that triggered the ownership acquisition
+.Po
+for
+.Fn ctrlsel_own
+.Pc ,
+or the conversion request
+.Po
+for
+.Fn ctrlsel_request
+.Pc .
+If its value is the
+.Dv CurrentTime
+constant,
+the current time is fetch from the X server
+(passing that value should be avoided).
+.El
+.Ss Data structure
+The
+.Ft "struct ctrlsel"
+structure contains the content of a selection converted into a given target.
+.Pp
+Its members are as follows:
+.Bl -tag -width Ds
+.It Fa data
+The address to the content of the selection converted into
+.Fa target .
+It must be cast into a pointer to
+.Ft char Ns s ,
+.Ft short Ns s ,
+or
+.Ft long Ns s ,
+depending on the value of the
+.Fa format
+member.
+The caller is responsible for freeing it.
+.It Fa format
+If its value is
+.Dv 8 ,
+.Fa data is an array of
+.Ft char Ns s .
+If
+.Dv 16 ,
+.Fa data is an array of
+.Ft short Ns s .
+If
+.Dv 32 ,
+.Fa data is an array of
+.Ft long Ns s .
+.It Fa length
+The number of
+.Ft char ,
+.Ft short ,
+or
+.Ft long
+elements in the address pointed to by the
+.Fa data
+member.
+.It Fa type
+The atom identifying the type (as in filetype) of the selection content,
+so clients can identify how to interpret it.
+Its value is almost often equal to the conversion target.
+.El
+.Ss Callback function
+The
+.Fa callback
+argument is a pointer to a function called by
+.Fn ctrlsel_answer
+to convert the selection to a supported
+.Fa target
+for the requestor.
+.Pp
+The opaque pointer
+.Fa arg
+is passed to the callback function, and can contain anything.
+.Pp
+The callback function MUST return as immediately as possible.
+It MUST NOT block or wait
+(otherwise the selection operation will not be responsive to the user).
+.Ss Requestor function
+The
+.Fn ctrlsel_request
+function requests the conversion of
+.Fa selection
+into
+.Fa target .
+.Pp
+It should be called after an event has triggered the selection request
+.Po
+for example, the user pressed
+.Sy Ctrl-V
+.Pc .
+The given
+.Fa timestamp
+is the timestamp associated with that event.
+If no event triggered the request, the value
+.Dv CurrentTime
+must be given instead
+.Po
+doing so is not recommended;
+selection is highly dependent on timestamps to circumvent
+the race conditions natural to X asynchronous events
+.Pc .
+.Pp
+If the conversion is successful,
+it returns a positive value and stores the converted content into
+.Fa content .
+It is the responsability of the caller to free
+.Fa content.data
+with
+.Xr XFree 3
+when it is no longer needed.
+.Pp
+If no conversion is made,
+it returns zero
+.Po
+if there is no owner for
+.Fa selection,
+or the owner does not support the target,
+or for some reason the owner refused to convert the selection
+.Pc ,
+or a negative value
+.Po
+if an error occurred, see
+.Sx ERRORS
+below
+.Pc .
+.Ss Owner functions
+The
+.Fn ctrlsel_own
+function acquires the ownership of
+.Fa selection
+for the
+.Fa owner
+window.
+It returns the timestamp of the ownership exchange
+(which is either the given
+.Fa timestamp ,
+or the server time);
+or zero if the ownership acquisition failed.
+.Pp
+On success, the caller should respond to the following events:
+.Bl -tag -width Ds
+.It Dv SelectionRequest
+If
+.Xr XSelectionRequestEvent 3 Ap s
+.Va owner
+and
+.Va selection
+members are the same as those given to
+.Fn ctrlsel_own ,
+then another client has requested the selection.
+If so,
+.Fn ctrlsel_answer
+should be called to answer the requestor.
+.It Dv SelectionClear
+If
+.Xr XSelectionClearEvent 3 Ap s
+.Va owner
+and
+.Va selection
+members are the same as those given to
+.Fn ctrlsel_own ,
+then the owner has lost the selection ownership.
+If so, the program should not respond to any further event related to that selection
+until its ownership is acquired again.
+.El
+.Pp
+It should be called after an event has triggered the selection ownership
+.Po
+for example, the user pressed
+.Sy Ctrl-C
+.Pc .
+The given
+.Fa timestamp
+is the timestamp associated with that event.
+If no event triggered the request, the value
+.Dv CurrentTime
+must be given instead
+.Po
+doing so is not recommended;
+selection is highly dependent on timestamps to circumvent
+the race conditions natural to X asynchronous events
+.Pc .
+.Pp
+The
+.Fn ctrlsel_answer
+function answers the conversion request made by another client.
+It must be given the array of supported
+.Fa targets ,
+and a pointer to the
+.Xr XEvent 3
+that has delivered the
+.Dv SelectionRequest
+event.
+The
+.Fa epoch
+argument must be the timestamp returned by a previous call to
+.Fn ctrlsel_own .
+It returns a positive value on success, and a negative number on error (see
+.Sx ERRORS
+below).
+.Pp
+A conversion request is only answered if it has occurred after
+.Fa epoch .
+To ignore (not answer) the conversion request, call it with
+.Fa epoch
+as zero.
+.Pp
+If it is answering a conversion to a supported target, the
+.Fa callback
+function is called to perform the conversion.
+If it can successfully convert,
+the callback function must return non-zero and fill in the
+.Fa content
+argument with the converted selection data and metadata.
+If it cannot convert (or ignores the request),
+it must return zero.
+.Pp
+It is the responsibility of the caller to free
+.Fa content.data
+(if dynamically allocated).
+The
+.Fn ctrlsel_answer
+function does not free it nor change any members of the
+.Fa content
+structure.
+.Sh RETURN VALUES
+For all these functions, a positive return value means success;
+a zero return value means natural failure;
+and a negative return value means an exceptional failure.
+.Pp
+The
+.Fn ctrlsel_request
+function return a positive value
+.Po
+.Dv 1 ,
+but it does not matter
+.Pc
+if the conversion request is successfully answered.
+If the conversion failed due to an error,
+a negative value is returned
+(see
+.Sx ERRORS
+below).
+Otherwise, it returns zero.
+.Pp
+The
+.Fn ctrlsel_own
+function returns the epoch of the ownership, if successful.
+It returns zero if the selection ownership could not be acaquired.
+.Pp
+The
+.Fn ctrlsel_answer
+function returns a positive value (no matter which)
+if the conversion is successfully answered to the requestor.
+It it fails due to an error, a negative value is returned
+(see
+.Sx ERRORS
+below).
+.Sh EXAMPLES
+The following code illustrates a simple event loop of a selection owner.
+The owner window acquires the selection ownership whenever the first mouse button is pressed;
+and deals with selection clear and selection request events.
+Variable initialization, error handling, and loop termination are not illustrated.
+.Bd -literal -offset indent
+Display *display;
+XEvent event;
+Window owner;
+Time epoch;
+Atom selection;
+Atom targets[NTARGETS];
+int error;
+int (*callback)(void *, Atom, struct ctrlsel *);
+
+\&...
+epoch = 0;
+while (!XNextEvent(display, &event)) switch (event.type) {
+case ButtonPress:
+	if (event.xbutton.button != Button1)
+		break;
+	epoch = ctrlsel_own(
+		display, owner,
+		event.xbutton.time, selection
+	);
+	if (epoch == 0)
+		fprintf(stderr, "ctrlsel: could not own selection\en");
+	break;
+case SelectionClear:
+	if (event.xselectionclear.window != owner)
+		break;
+	if (event.xselectionclear.selection != selection)
+		break;
+	epoch = 0;
+	break;
+case SelectionRequest:
+	if (event.xselectionrequest.owner != owner)
+		break;
+	if (event.xselectionrequest.selection != selection)
+		break;
+	if (epoch == 0)
+		break;
+	error = ctrlsel_answer(
+		&event, epoch,
+		targets, NTARGETS,
+		callback, NULL
+	);
+	if (error < 0)
+		fprintf(stderr, "ctrlsel: %s", strerror(-error));
+	break;
+}
+.Ed
+.Sh ERRORS
+The
+.Fn ctrlsel_request
+and
+.Fn ctrlsel_answer
+functions return a negative value on error.
+.Pp
+The following error constant negations may be returned on error:
+.Bl -tag -width Er
+.It Er \-EINVAL
+The
+.Fa callback
+function filled invalid values into the
+.Fa content
+structure.
+For example, an invalid
+.Fa format
+(not
+.Dv 8 ,
+.Dv 16 ,
+nor
+.Dv 32 ) ;
+or
+.Dv NULL
+.Fa data
+together with non-zero
+.Fa length .
+.It Er \-EMSGSIZE
+The transmitted data is too large for a single protocol request.
+.It Er \-ENOMEM
+The function was unable to allocate memory.
+.It Er \-ETIMEDOUT
+The server or the other client did not respond after a period of time.
+This error is not fatal;
+for example, the other client is busy or froze.
+The program should not take any severe action like termination in such case,
+usually printing an warning message is enough.
+.El
+.Pp
+Other error constants may be returned (in negative),
+if generated by a system call or standard library error.
+.Sh SEE ALSO
+.Xr X 7
+.Rs
+.%T Xlib - C Language X Interface
+.%U https://www.x.org/releases/current/doc/libX11/libX11/libX11.html
+.%Q X Consortium Standard
+.Re
+.Rs
+.%T Inter-Client Communication Conventions Manual
+.%U https://www.x.org/releases/current/doc/xorg-docs/icccm/icccm.html
+.%Q X Consortium Standard
+.Re
+.Sh CAVEATS
+.Fn ctrlsel_answer
+may call the
+.Fa callback
+function more than once, if it is answering a request to convert into multiple targets.
+The program should keep track of the data pointed by
+.Fa *pbuf ,
+if it has been dynamically allocated.
+.Sh BUGS
+These functions are synchronous, even that X selection mechanism is asynchronous.
+Since selection conversion is an operation triggered by the user and notified to the user,
+it is supposed to be completed quickly.
+A slow copy-and-paste operation is expected to be an error.
+If it takes too long to finish, a function returns
+.Er \-ETIMEDOUT .
+.Pp
+Requesting conversion into the
+.Dv MULTIPLE
+target is not supported.
+Clients rarely do it,
+since targets are just different data formats of the content,
+or even the exact same data just labeled under equivalent formats
+(like
+.Dv STRING
+and
+.Dv TEXT ) .
+If it is really needed to convert a selection into multiple targets, just call
+.Fn ctrlsel_request
+for each target, passing the same
+.Fa time
+argument to each call.
+Answering a multiple selection request is supported by
+.Fn ctrlsel_answer ,
+though.
+.Pp
+The
+.Fn ctrlsel_answer
+function does not support answering a selection request incrementally.
+If the selection data is too large, it will fail with
+.Er \-EMSGSIZE .
+This should not be a problem.
+Modern X servers have the Big Requests Extension,
+under which a protocol request can be up to 16 MiB long
+(that number would be 256 KiB).
+In any case, data large enough to fail with
+.Er \-EMSGSIZE
+are probably too large to be user\-selected or \-copied.
+.Pp
+However, the
+.Fn ctrlsel_request
+function does support fetching selection data incrementally;
+thus being able to get the selection from clients with bad incremental response
+(which send data incrementally in chunks way smaller than the maximum protocol request size).
+Also, incremental conversion is easier to implement on the requestor side.
+.Pp
+The implementation of these functions is not thread-safe.
+They set XLib's internal error handler function, which is a global value;
+although they reset to its original value before returning.
