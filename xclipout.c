@@ -59,7 +59,7 @@ main(int argc, char *argv[])
 		errx(EXIT_FAILURE, "cannot convert selection to any requested target");
 	if (ctrlsel_request(
 		display, timestamp, selection, target, &content
-	) < 0 || content.format != 32 || content.type != XA_INTEGER) {
+	) < 0) {
 		errx(EXIT_FAILURE, "cannot convert selection");
 	}
 	if (fwrite(content.data, 1, content.length, stdout) != (size_t)content.length)
