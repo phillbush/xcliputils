@@ -169,7 +169,7 @@ main(void)
 
 		clip.contents = NULL;
 		if (clip.ntargets > 0) {
-			clip.contents = reallocarray(buf, clip.ntargets, sizeof(buf));
+			clip.contents = reallocarray(buf, clip.ntargets, sizeof(*buf));
 		}
 		if (clip.contents == NULL) {
 			XFree(clip.targets);
